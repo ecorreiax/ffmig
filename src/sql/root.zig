@@ -94,6 +94,44 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
     }
 }
 
+/// A statement that acts on a whole database, run by `create`, `drop`,
+/// `protect` and `unprotect` from the maintenance database.
+pub const Database = union(enum) {
+    create: []const u8,
+    drop: []const u8,
+    /// Selects one row if the database exists, none otherwise.
+    exists: []const u8,
+    /// Marks the database so that `drop` refuses it.
+    protect: []const u8,
+    unprotect: []const u8,
+    /// Selects one row if the database is protected, none otherwise.
+    protected: []const u8,
+};
+
+/// Writes one database statement, without a trailing `;`.
+pub fn writeDatabase(dialect: Dialect, d: Database, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try database(postgres, d, w),
+    }
+}
+
+fn database(comptime D: type, d: Database, w: *Writer) Writer.Error!void {
+    switch (d) {
+        .create => |name| {
+            try w.writeAll("CREATE DATABASE ");
+            try D.identifier(w, name);
+        },
+        .drop => |name| {
+            try w.writeAll("DROP DATABASE ");
+            try D.identifier(w, name);
+        },
+        .exists => |name| try D.databaseExists(w, name),
+        .protect => |name| try D.setProtected(w, name, true),
+        .unprotect => |name| try D.setProtected(w, name, false),
+        .protected => |name| try D.databaseProtected(w, name),
+    }
+}
+
 /// `D` is a dialect file; see `postgres.zig` for the functions it provides.
 fn writeAll(comptime D: type, ops: []const ast.Operation, w: *Writer) Writer.Error!void {
     for (ops) |op| {

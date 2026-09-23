@@ -32,6 +32,14 @@ path = "migrations"
 url = "${DATABASE_URL}"
 ```
 
+If the database does not exist yet, create it:
+
+```sh
+ffmig create
+```
+
+`ffmig drop` removes it again, `schema_migrations` included, so `create` and `migrate` start from an empty database. It shows the server and asks you to type the database name first; in scripts, where there is no terminal to ask on, pass `--force`.
+
 ### 2. Write a migration
 
 ```sh
@@ -72,6 +80,10 @@ Applied versions are recorded in a `schema_migrations` table. `migrate` checks e
 | Command          | Description                                            |
 |------------------|--------------------------------------------------------|
 | `init`           | Create `ffmig.toml` and the migrations directory       |
+| `create`         | Create the database named by the database url          |
+| `drop`           | Drop that database after confirmation (`--force`)      |
+| `protect`        | Mark the database so that `drop` refuses it            |
+| `unprotect`      | Remove that mark                                       |
 | `new <name>`     | Create a timestamped migration file                    |
 | `check [files]`  | Check `.mig` files (`--ast`, `--down`)                 |
 | `sql <file>`     | Print the SQL for a migration (`--down` for rollback)  |
@@ -79,6 +91,12 @@ Applied versions are recorded in a `schema_migrations` table. `migrate` checks e
 | `rollback`       | Undo the last migration (`--step <n>` for more)        |
 | `status`         | List migrations as up or down                          |
 | `help`           | Show usage                                             |
+
+### Protecting production
+
+Run `ffmig protect` once against any database you never want dropped. The mark is stored on the database server itself, not in `ffmig.toml`, so a changed `DATABASE_URL` or environment cannot get around it: `drop` refuses a protected database even with `--force`, until someone runs `ffmig unprotect`.
+
+For a guarantee that does not depend on ffmig at all, have your application connect as a role that does not own the database; PostgreSQL then rejects `DROP DATABASE` from it whatever tool sends it.
 
 ## Contributing
 

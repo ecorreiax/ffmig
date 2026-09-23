@@ -1,6 +1,6 @@
-//! What `migrate`, `rollback` and `status` share: loading the migration
-//! files, connecting, reading the recorded versions, and running one
-//! migration's statements together with its tracking row.
+//! What the commands that touch the database share: loading the config
+//! and the migration files, connecting, reading the recorded versions,
+//! and running one migration's statements together with its tracking row.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -35,16 +35,7 @@ pub const Project = struct {
     /// problems to `err` and returns null. Everything is allocated in
     /// `arena`.
     pub fn load(env: Env, arena: Allocator, err: *Writer) Writer.Error!?Project {
-        var diag: config.Diagnostics = .{};
-        const cfg = config.load(env.io, env.cwd, arena, &diag) catch |e| {
-            switch (e) {
-                error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
-                error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
-                else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
-            }
-            return null;
-        };
-
+        const cfg = try loadConfig(env, arena, err) orelse return null;
         var dir = env.cwd.openDir(env.io, cfg.path, .{ .iterate = true }) catch |e| {
             try err.print("ffmig: cannot open directory {s}: {t}\n", .{ cfg.path, e });
             return null;
@@ -123,6 +114,19 @@ pub const Project = struct {
     }
 };
 
+/// Loads `ffmig.toml`, reporting problems to `err` and returning null.
+pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config.Config {
+    var diag: config.Diagnostics = .{};
+    return config.load(env.io, env.cwd, arena, &diag) catch |e| {
+        switch (e) {
+            error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
+            error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
+            else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
+        }
+        return null;
+    };
+}
+
 /// A migration file after parsing, with what error reports need.
 pub const Parsed = struct {
     file: File,
@@ -152,6 +156,16 @@ pub const Connection = struct { db: db.Db, dialect: db.Dialect };
 /// problems to `err` and returns null. Never prints the URL, which may
 /// hold a password.
 pub fn connect(env: Env, arena: Allocator, url: ?[]const u8, err: *Writer) Writer.Error!?Connection {
+    const resolved = try resolveUrl(env, arena, url, err) orelse return null;
+    return open(arena, resolved, err);
+}
+
+/// A database URL after `${VAR}` expansion, with the dialect its scheme
+/// selects.
+pub const Url = struct { url: []const u8, dialect: db.Dialect };
+
+/// The first half of `connect`: expands `url` and picks its dialect.
+pub fn resolveUrl(env: Env, arena: Allocator, url: ?[]const u8, err: *Writer) Writer.Error!?Url {
     const raw = url orelse {
         try err.print("ffmig: no database url in {s}; set [database] url\n", .{config.file_name});
         return null;
@@ -179,12 +193,17 @@ pub fn connect(env: Env, arena: Allocator, url: ?[]const u8, err: *Writer) Write
         }
         return null;
     };
+    return .{ .url = expanded, .dialect = dialect };
+}
+
+/// The second half of `connect`.
+pub fn open(arena: Allocator, url: Url, err: *Writer) Writer.Error!?Connection {
     var diag: db.Diagnostic = .{};
-    const conn = db.connect(arena, dialect, expanded, &diag) catch |e| {
+    const conn = db.connect(arena, url.dialect, url.url, &diag) catch |e| {
         try dbError(e, err, "cannot connect to the database", diag);
         return null;
     };
-    return .{ .db = conn, .dialect = dialect };
+    return .{ .db = conn, .dialect = url.dialect };
 }
 
 /// Creates the tracking table if it is missing and returns the recorded
@@ -259,7 +278,7 @@ fn trackingSql(arena: Allocator, dialect: db.Dialect, t: sql.Tracking) Allocator
 }
 
 /// Reports a database error prefixed with `context`.
-fn dbError(e: db.Error, err: *Writer, context: []const u8, diag: db.Diagnostic) Writer.Error!void {
+pub fn dbError(e: db.Error, err: *Writer, context: []const u8, diag: db.Diagnostic) Writer.Error!void {
     switch (e) {
         error.OutOfMemory => try outOfMemory(err),
         error.DatabaseError => try err.print("ffmig: {s}: {s}\n", .{ context, diag.message }),

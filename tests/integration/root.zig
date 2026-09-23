@@ -225,3 +225,60 @@ test "a failing migration rolls back only itself" {
         \\
     , "");
 }
+
+test "create, migrate, protect and drop" {
+    const host = testing.environ.getPosix("FFMIG_TEST_PGHOST") orelse return error.NoTestServer;
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = config.file_name,
+        .data = "[migration]\npath = \"db\"\n\n[database]\nurl = \"${DATABASE_URL}\"\n",
+    });
+    try tmp.dir.createDirPath(testing.io, "db");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "db/" ++ create_users[0], .data = create_users[1] });
+
+    var environ: std.process.Environ.Map = .init(arena);
+    // A name that needs quoting.
+    try environ.put("DATABASE_URL", try url(arena, host, "create%20drop"));
+    const env: ffmig.commands.Env = .{ .io = testing.io, .cwd = tmp.dir, .gpa = testing.allocator, .environ = &environ };
+
+    var admin = try connect(arena, host, "postgres");
+    defer admin.close();
+    const exists = "SELECT datname FROM pg_database WHERE datname = 'create drop'";
+
+    const Step = struct { args: []const []const u8, code: u8 = 0, stdout: []const u8 = "", stderr: []const u8 = "", rows: usize };
+    const steps = [_]Step{
+        .{ .args = &.{"drop"}, .stdout = "Database create drop does not exist\n", .rows = 0 },
+        .{ .args = &.{"create"}, .stdout = "Created database create drop\n", .rows = 1 },
+        .{ .args = &.{"create"}, .stdout = "Database create drop already exists\n", .rows = 1 },
+        .{ .args = &.{"migrate"}, .stdout = "Migrated db/20260101000000_create_users.mig\n", .rows = 1 },
+        // No terminal to confirm on.
+        .{ .args = &.{"drop"}, .code = 1, .stderr = try std.fmt.allocPrint(arena, "ffmig: dropping database create drop on {s}:5432 needs confirmation; run it in a terminal or pass --force\n", .{host}), .rows = 1 },
+        .{ .args = &.{"protect"}, .stdout = "Protected database create drop\n", .rows = 1 },
+        .{ .args = &.{ "drop", "--force" }, .code = 1, .stderr = "ffmig: database create drop is protected; run 'ffmig unprotect' first to drop it\n", .rows = 1 },
+        // Still recorded: the refused drops touched nothing.
+        .{ .args = &.{"status"}, .stdout = "up    db/20260101000000_create_users.mig\n", .rows = 1 },
+        .{ .args = &.{"unprotect"}, .stdout = "Unprotected database create drop\n", .rows = 1 },
+        .{ .args = &.{ "drop", "--force" }, .stdout = "Dropped database create drop\n", .rows = 0 },
+        .{ .args = &.{"create"}, .stdout = "Created database create drop\n", .rows = 1 },
+        // A fresh database: nothing recorded in schema_migrations.
+        .{ .args = &.{"status"}, .stdout = "down  db/20260101000000_create_users.mig\n", .rows = 1 },
+        .{ .args = &.{ "drop", "--force" }, .stdout = "Dropped database create drop\n", .rows = 0 },
+    };
+    for (steps) |s| {
+        var out: Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var err: Writer.Allocating = .init(testing.allocator);
+        defer err.deinit();
+        const code = try ffmig.cli.run(env, s.args, &out.writer, &err.writer);
+        try testing.expectEqualStrings(s.stderr, err.written());
+        try testing.expectEqualStrings(s.stdout, out.written());
+        try testing.expectEqual(s.code, code);
+        var diag: db.Diagnostic = .{};
+        try testing.expectEqual(s.rows, (try admin.query(arena, exists, &diag)).len);
+    }
+}

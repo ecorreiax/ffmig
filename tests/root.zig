@@ -24,4 +24,5 @@ test {
     _ = @import("sql.zig");
     _ = @import("sql_command.zig");
     _ = @import("migrate.zig");
+    _ = @import("database.zig");
 }

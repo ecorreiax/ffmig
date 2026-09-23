@@ -143,3 +143,22 @@ fn expectGolden(dir: std.Io.Dir, mig_name: []const u8, dialect: sql.Dialect) !vo
     };
     try testing.expectEqualStrings(expected, actual.written());
 }
+
+fn expectDatabase(d: sql.Database, expected: []const u8) !void {
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try sql.writeDatabase(.postgres, d, &out.writer);
+    try testing.expectEqualStrings(expected, out.written());
+}
+
+test "postgres database statements" {
+    try expectDatabase(.{ .create = "app_dev" }, "CREATE DATABASE \"app_dev\"");
+    try expectDatabase(.{ .drop = "my\"db" }, "DROP DATABASE \"my\"\"db\"");
+    try expectDatabase(.{ .exists = "it's" }, "SELECT 1 FROM pg_database WHERE datname = 'it''s'");
+    try expectDatabase(.{ .protect = "app" }, "ALTER DATABASE \"app\" SET ffmig.protected = on");
+    try expectDatabase(.{ .unprotect = "app" }, "ALTER DATABASE \"app\" RESET ffmig.protected");
+    try expectDatabase(.{ .protected = "it's" },
+        \\SELECT 1 FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
+        \\WHERE s.setrole = 0 AND 'ffmig.protected=on' = ANY (s.setconfig) AND d.datname = 'it''s'
+    );
+}

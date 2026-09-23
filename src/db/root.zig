@@ -26,7 +26,15 @@ pub const Db = struct {
     pub const VTable = struct {
         exec: *const fn (ptr: *anyopaque, statement: []const u8, diag: *Diagnostic) Error!void,
         query: *const fn (ptr: *anyopaque, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const []const u8,
+        server: *const fn (ptr: *anyopaque) Server,
         close: *const fn (ptr: *anyopaque) void,
+    };
+
+    /// Where the connection went, as the driver resolved it.
+    pub const Server = struct {
+        /// A host name, an address, or a Unix socket directory.
+        host: []const u8,
+        port: []const u8,
     };
 
     /// Runs one statement and discards any rows.
@@ -38,6 +46,11 @@ pub const Db = struct {
     /// text allocated in `arena`.
     pub fn query(db: Db, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const []const u8 {
         return db.vtable.query(db.ptr, arena, statement, diag);
+    }
+
+    /// Valid until `close`.
+    pub fn server(db: Db) Server {
+        return db.vtable.server(db.ptr);
     }
 
     pub fn close(db: Db) void {
@@ -53,6 +66,25 @@ pub fn dialectFor(url: []const u8) ?Dialect {
     };
     for (schemes) |s| if (std.ascii.startsWithIgnoreCase(url, s[0])) return s[1];
     return null;
+}
+
+/// Where `create`, `drop`, `protect` and `unprotect` connect to act on a
+/// database.
+pub const Admin = struct {
+    /// The database the URL names.
+    database: []const u8,
+    /// The URL rewritten to name the dialect's maintenance database.
+    url: []const u8,
+};
+
+pub const AdminError = error{ NoDatabaseName, OutOfMemory };
+
+/// Splits `url` for the commands above. `error.NoDatabaseName` when the
+/// URL does not name a database in its path.
+pub fn admin(arena: Allocator, dialect: Dialect, url: []const u8) AdminError!Admin {
+    return switch (dialect) {
+        .postgres => postgres.admin(arena, url),
+    };
 }
 
 /// Connects with the driver for `dialect`. Error messages and the

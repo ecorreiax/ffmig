@@ -33,7 +33,7 @@ const FakeDb = struct {
         return .{ .db = .{ .ptr = f, .vtable = &vtable }, .dialect = .postgres };
     }
 
-    const vtable: db.Db.VTable = .{ .exec = exec, .query = query, .close = close };
+    const vtable: db.Db.VTable = .{ .exec = exec, .query = query, .server = server, .close = close };
 
     fn exec(ptr: *anyopaque, statement: []const u8, diag: *db.Diagnostic) db.Error!void {
         const f: *FakeDb = @ptrCast(@alignCast(ptr));
@@ -49,6 +49,10 @@ const FakeDb = struct {
         std.debug.assert(std.mem.startsWith(u8, statement, "SELECT"));
         // Callers may sort the result in place.
         return arena.dupe([]const u8, f.applied);
+    }
+
+    fn server(_: *anyopaque) db.Db.Server {
+        return .{ .host = "localhost", .port = "5432" };
     }
 
     fn close(_: *anyopaque) void {}

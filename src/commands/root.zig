@@ -13,6 +13,11 @@ pub const sql = @import("sql.zig");
 pub const migrate = @import("migrate.zig");
 pub const rollback = @import("rollback.zig");
 pub const status = @import("status.zig");
+pub const create = @import("create.zig");
+pub const drop = @import("drop.zig");
+pub const protect = @import("protect.zig");
+pub const unprotect = @import("unprotect.zig");
+pub const database = @import("database.zig");
 pub const migrations = @import("migrations.zig");
 
 /// Process resources a command may need, injected so tests can point
@@ -24,10 +29,18 @@ pub const Env = struct {
     /// Environment variables, for `${VAR}` in the database URL. Null
     /// behaves like an empty environment.
     environ: ?*const std.process.Environ.Map = null,
+    /// Standard input when it is a terminal, for confirmation prompts.
+    /// Null means nobody can answer, so commands that need confirmation
+    /// refuse unless forced.
+    stdin: ?*Io.Reader = null,
 };
 
 pub const Command = enum {
     init,
+    create,
+    drop,
+    protect,
+    unprotect,
     new,
     check,
     sql,
@@ -42,6 +55,10 @@ pub const Command = enum {
 pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     return switch (command) {
         .init => init.run(env, args, out, err),
+        .create => create.run(env, args, out, err),
+        .drop => drop.run(env, args, out, err),
+        .protect => protect.run(env, args, out, err),
+        .unprotect => unprotect.run(env, args, out, err),
         .new => new.run(env, args, out, err),
         .check => check.run(env, args, out, err),
         .sql => sql.run(env, args, out, err),

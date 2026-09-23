@@ -12,6 +12,12 @@ pub const usage =
     \\  init           Create ffmig.toml and the migrations directory
     \\                   --path <dir>  Migrations directory (default: migrations)
     \\                   --url <url>   Database URL (default: ${DATABASE_URL})
+    \\  create         Create the database named by the database url
+    \\  drop           Drop that database, schema_migrations included, after
+    \\                 asking for its name
+    \\                   --force       Do not ask (still refused if protected)
+    \\  protect        Mark the database so that drop refuses it
+    \\  unprotect      Remove that mark
     \\  new <name>     Create a timestamped migration file, e.g. new create_users
     \\  check [files]  Check .mig files (default: all in the migrations directory)
     \\                   --ast         Print the parsed migration

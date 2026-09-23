@@ -1,5 +1,5 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
-//! primary keys, literals and named defaults.
+//! primary keys, literals, named defaults and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -82,4 +82,28 @@ pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ast.ColumnType) Writer.E
     try w.writeAll(switch (n) {
         .now => "CURRENT_TIMESTAMP",
     });
+}
+
+pub fn databaseExists(w: *Writer, name: []const u8) Writer.Error!void {
+    try w.writeAll("SELECT 1 FROM pg_database WHERE datname = ");
+    try literal(w, .{ .string = name });
+}
+
+/// The protection mark is a custom setting on the database, which
+/// PostgreSQL keeps in its catalog, so it survives everything short of
+/// dropping the database and never depends on ffmig's own tables.
+const protected_setting = "ffmig.protected";
+
+pub fn setProtected(w: *Writer, name: []const u8, on: bool) Writer.Error!void {
+    try w.writeAll("ALTER DATABASE ");
+    try identifier(w, name);
+    try w.writeAll(if (on) " SET " ++ protected_setting ++ " = on" else " RESET " ++ protected_setting);
+}
+
+pub fn databaseProtected(w: *Writer, name: []const u8) Writer.Error!void {
+    try w.writeAll(
+        \\SELECT 1 FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
+        \\WHERE s.setrole = 0 AND '
+    ++ protected_setting ++ "=on' = ANY (s.setconfig) AND d.datname = ");
+    try literal(w, .{ .string = name });
 }

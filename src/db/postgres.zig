@@ -20,6 +20,8 @@ const PGRES_TUPLES_OK = 2;
 extern "pq" fn PQconnectdb(conninfo: [*:0]const u8) ?*PGconn;
 extern "pq" fn PQstatus(conn: *const PGconn) c_int;
 extern "pq" fn PQerrorMessage(conn: *const PGconn) [*:0]const u8;
+extern "pq" fn PQhost(conn: *const PGconn) [*:0]const u8;
+extern "pq" fn PQport(conn: *const PGconn) [*:0]const u8;
 extern "pq" fn PQfinish(conn: *PGconn) void;
 extern "pq" fn PQsetNoticeProcessor(conn: *PGconn, proc: NoticeProcessor, arg: ?*anyopaque) ?NoticeProcessor;
 extern "pq" fn PQexec(conn: *PGconn, query: [*:0]const u8) ?*PGresult;
@@ -53,7 +55,7 @@ pub const Connection = struct {
         return .{ .ptr = c, .vtable = &vtable };
     }
 
-    const vtable: Db.VTable = .{ .exec = exec, .query = query, .close = close };
+    const vtable: Db.VTable = .{ .exec = exec, .query = query, .server = server, .close = close };
 
     fn exec(ptr: *anyopaque, statement: []const u8, diag: *Diagnostic) Error!void {
         const c: *Connection = @ptrCast(@alignCast(ptr));
@@ -68,6 +70,11 @@ pub const Connection = struct {
         const rows = try arena.alloc([]const u8, @intCast(PQntuples(res)));
         for (rows, 0..) |*row, i| row.* = try arena.dupe(u8, std.mem.span(PQgetvalue(res, @intCast(i), 0)));
         return rows;
+    }
+
+    fn server(ptr: *anyopaque) Db.Server {
+        const c: *Connection = @ptrCast(@alignCast(ptr));
+        return .{ .host = std.mem.span(PQhost(c.conn)), .port = std.mem.span(PQport(c.conn)) };
     }
 
     fn close(ptr: *anyopaque) void {
@@ -88,6 +95,41 @@ pub const Connection = struct {
         }
     }
 };
+
+/// Database that `create`, `drop`, `protect` and `unprotect` connect to,
+/// since `create` and `drop` cannot run while connected to the database
+/// they act on.
+pub const maintenance_database = "postgres";
+
+/// Splits `url` into the database its path names, percent-decoded, and
+/// the same URL with the path replaced by `maintenance_database`. Query
+/// parameters such as `host` are kept.
+pub fn admin(arena: Allocator, url: []const u8) root.AdminError!root.Admin {
+    const scheme_end = (std.mem.indexOf(u8, url, "://") orelse return error.NoDatabaseName) + "://".len;
+    const path_start = std.mem.indexOfAnyPos(u8, url, scheme_end, "/?#") orelse return error.NoDatabaseName;
+    if (url[path_start] != '/') return error.NoDatabaseName;
+    const path_end = std.mem.indexOfAnyPos(u8, url, path_start, "?#") orelse url.len;
+    // libpq lets a `dbname` parameter override the path.
+    if (hasParam(url[path_end..], "dbname")) return error.NoDatabaseName;
+    const database = std.Uri.percentDecodeInPlace(try arena.dupe(u8, url[path_start + 1 .. path_end]));
+    if (database.len == 0) return error.NoDatabaseName;
+    return .{
+        .database = database,
+        .url = try std.mem.concat(arena, u8, &.{ url[0 .. path_start + 1], maintenance_database, url[path_end..] }),
+    };
+}
+
+/// Whether the `?a=b&c=d` query in `rest` sets `name`.
+fn hasParam(rest: []const u8, name: []const u8) bool {
+    if (rest.len == 0 or rest[0] != '?') return false;
+    const query = rest[1 .. std.mem.indexOfScalar(u8, rest, '#') orelse rest.len];
+    var params = std.mem.splitScalar(u8, query, '&');
+    while (params.next()) |p| {
+        const key = p[0 .. std.mem.indexOfScalar(u8, p, '=') orelse p.len];
+        if (std.mem.eql(u8, key, name)) return true;
+    }
+    return false;
+}
 
 fn ignoreNotice(_: ?*anyopaque, _: [*:0]const u8) callconv(.c) void {}
 
