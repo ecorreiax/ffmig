@@ -48,9 +48,8 @@ fn generate(env: Env, args: []const []const u8, now: u64, out: *Writer, err: *Wr
     };
     defer env.gpa.free(file_name);
 
-    const snake = fs.migrationName(file_name);
     var content_buf: [512]u8 = undefined;
-    const content = std.fmt.bufPrint(&content_buf, "migration {s} {{\n}}\n", .{snake}) catch {
+    const content = writeTemplate(&content_buf, fs.migrationName(file_name)) catch {
         try err.print("ffmig: migration name '{s}' is too long\n", .{name});
         return 1;
     };
@@ -76,6 +75,15 @@ fn generate(env: Env, args: []const []const u8, now: u64, out: *Writer, err: *Wr
 
     try out.print("Created {s}/{s}\n", .{ cfg.path, file_name });
     return 0;
+}
+
+/// The body of a new migration, named after its snake_case file name.
+fn writeTemplate(buf: []u8, snake: []const u8) Writer.Error![]const u8 {
+    var w: Writer = .fixed(buf);
+    try w.writeAll("migration ");
+    try fs.writePascalCase(&w, snake);
+    try w.writeAll(" {\n  change {\n  }\n}\n");
+    return w.buffered();
 }
 
 const testing = std.testing;
@@ -127,7 +135,26 @@ test "new creates a migration in the configured directory" {
         .unlimited,
     );
     defer testing.allocator.free(content);
-    try testing.expectEqualStrings("migration create_users_2 {\n}\n", content);
+    try testing.expectEqualStrings("migration CreateUsers2 {\n  change {\n  }\n}\n", content);
+}
+
+test "new names the migration in pascal case" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeConfig(tmp.dir, "migrations");
+
+    var r = try generateIn(tmp.dir, &.{"Add_email_to_Users"});
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+
+    const content = try tmp.dir.readFileAlloc(
+        testing.io,
+        "migrations/20260923140512_add_email_to_users.mig",
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("migration AddEmailToUsers {\n  change {\n  }\n}\n", content);
 }
 
 test "new rejects invalid names" {

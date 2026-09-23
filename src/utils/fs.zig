@@ -78,6 +78,19 @@ pub fn writeSnakeCase(w: *Writer, name: []const u8) Writer.Error!void {
     }
 }
 
+/// `create_users_2` -> `CreateUsers2`. Expects the output of `writeSnakeCase`.
+pub fn writePascalCase(w: *Writer, snake: []const u8) Writer.Error!void {
+    var word_start = true;
+    for (snake) |c| {
+        if (c == '_') {
+            word_start = true;
+            continue;
+        }
+        try w.writeByte(if (word_start) std.ascii.toUpper(c) else c);
+        word_start = false;
+    }
+}
+
 const testing = std.testing;
 
 // 2026-09-23 14:05:12 UTC
@@ -103,6 +116,26 @@ test "migration name round-trips from a file name" {
     const file_name = try migrationFileName(testing.allocator, fixed_time, "CreateUsers2");
     defer testing.allocator.free(file_name);
     try testing.expectEqualStrings("create_users_2", migrationName(file_name));
+}
+
+fn expectPascalCase(name: []const u8, expected: []const u8) !void {
+    var snake_buf: [64]u8 = undefined;
+    var snake: Writer = .fixed(&snake_buf);
+    try writeSnakeCase(&snake, name);
+    var buf: [64]u8 = undefined;
+    var w: Writer = .fixed(&buf);
+    try writePascalCase(&w, snake.buffered());
+    try testing.expectEqualStrings(expected, w.buffered());
+}
+
+test "pascal case follows the snake case words" {
+    try expectPascalCase("create_user", "CreateUser");
+    try expectPascalCase("DropUser", "DropUser");
+    try expectPascalCase("Addemailtousers", "Addemailtousers");
+    try expectPascalCase("Add_email_to_Users", "AddEmailToUsers");
+    try expectPascalCase("CreateUsers2", "CreateUsers2");
+    try expectPascalCase("AddHTTPRequestLog", "AddHttpRequestLog");
+    try expectPascalCase("_users", "Users");
 }
 
 test "timestamps are zero padded" {
