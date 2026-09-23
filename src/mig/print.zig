@@ -7,6 +7,7 @@
 //!     create_table users_profile id=uuid
 //!       column name string null
 //!       column email string not_null limit=255
+//!       column owner_id uuid not_null reference fk=users on_delete=cascade index
 //!     add_index users_profile email unique
 //! ```
 
@@ -94,6 +95,18 @@ fn column(w: *Writer, c: ast.Column) Writer.Error!void {
                 .boolean => |b| try w.print("{}", .{b}),
                 .nil => try w.writeAll("nil"),
             },
+        }
+    }
+    if (c.reference) |r| {
+        try w.writeAll(" reference");
+        if (r.foreign_key) |fk| {
+            try w.print(" fk={s}", .{fk.table});
+            if (fk.on_delete) |a| try w.print(" on_delete={t}", .{a});
+        }
+        switch (r.index) {
+            .none => {},
+            .plain => try w.writeAll(" index"),
+            .unique => try w.writeAll(" unique_index"),
         }
     }
     try w.writeByte('\n');

@@ -196,6 +196,58 @@ test "migrate, status and rollback" {
     try f.expectRun(&.{"rollback"}, 0, "Nothing to roll back\n", "");
 }
 
+test "references add a foreign key and an index, and roll back" {
+    const create_posts = [2][]const u8{
+        "20260102000000_create_posts.mig",
+        \\migration CreatePosts {
+        \\  change {
+        \\    create_table :posts {
+        \\      references :user, null: false, on_delete: :cascade
+        \\      references :parent, to: :posts
+        \\      references :editor, to: :users, index: :unique
+        \\    }
+        \\    add_reference :users, :best_post, to: :posts, on_delete: :nullify
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("references", &.{ create_users, create_posts });
+    defer f.deinit();
+
+    try f.expectRun(&.{"migrate"}, 0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_create_posts.mig
+        \\
+    , "");
+    const constraints =
+        \\SELECT conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+        \\WHERE contype = 'f' ORDER BY conname
+    ;
+    try f.expectQuery(constraints, "fk_posts_on_editor_id FOREIGN KEY (editor_id) REFERENCES users(id)," ++
+        "fk_posts_on_parent_id FOREIGN KEY (parent_id) REFERENCES posts(id)," ++
+        "fk_posts_on_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE," ++
+        "fk_users_on_best_post_id FOREIGN KEY (best_post_id) REFERENCES posts(id) ON DELETE SET NULL");
+    const indexes = "SELECT indexname FROM pg_indexes WHERE tablename IN ('posts', 'users') ORDER BY indexname";
+    try f.expectQuery(indexes, "index_posts_on_editor_id,index_posts_on_parent_id,index_posts_on_user_id,index_users_on_best_post_id,posts_pkey,users_pkey");
+
+    try f.expectQuery(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'index_posts_on_editor_id'",
+        "CREATE UNIQUE INDEX index_posts_on_editor_id ON public.posts USING btree (editor_id)",
+    );
+
+    // The foreign keys act: deleting the user deletes their post.
+    try exec(f.conn, "INSERT INTO users (id, email) VALUES (1, 'a@b.c')");
+    try exec(f.conn, "INSERT INTO posts (id, user_id) VALUES (1, 1)");
+    try exec(f.conn, "UPDATE users SET best_post_id = 1");
+    try exec(f.conn, "DELETE FROM users");
+    try f.expectQuery("SELECT count(*)::text FROM posts", "0");
+
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_create_posts.mig\n", "");
+    try f.expectColumns("users", "id,email");
+    try f.expectColumns("posts", "");
+    try f.expectQuery(constraints, "");
+}
+
 test "a failing migration rolls back only itself" {
     const bad = [2][]const u8{
         "20260102000000_bad.mig",

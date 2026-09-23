@@ -1,0 +1,6 @@
+migration MovePostsToAccounts {
+  change {
+    add_reference :posts, :account, null: false, type: :uuid
+    remove_reference :posts, :user, on_delete: :cascade
+  }
+}

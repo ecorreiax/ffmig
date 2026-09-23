@@ -1,0 +1,13 @@
+migration CreateSessions {
+  change {
+    create_table :sessions, id: :uuid {
+      references :user, null: false, type: :uuid, on_delete: :cascade
+      references :category
+      references :device, index: :unique
+      references :address, foreign_key: false
+      references :key, index: false, on_delete: :nullify
+      references :author, to: :users, on_delete: :restrict
+      string :ip_address
+    }
+  }
+}

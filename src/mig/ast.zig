@@ -57,8 +57,32 @@ pub const Column = struct {
     /// `decimal` only; `scale` requires `precision`.
     precision: ?u8 = null,
     scale: ?u8 = null,
+    /// Set on the `<name>_id` column a `references` statement makes.
+    reference: ?Reference = null,
     span: Span,
 };
+
+/// What a reference adds besides its column. The column's type is
+/// `bigint` or `uuid`.
+pub const Reference = struct {
+    /// Null with `foreign_key: false`.
+    foreign_key: ?ForeignKey,
+    /// The index `index_<table>_on_<column>`, if any.
+    index: ReferenceIndex,
+};
+
+/// `index:` of a reference: `false`, `true` or `:unique`.
+pub const ReferenceIndex = enum { none, plain, unique };
+
+/// Points at `table(id)`, named `fk_<table>_on_<column>` after the table
+/// that has the column.
+pub const ForeignKey = struct {
+    table: []const u8,
+    /// Null for the database's default, which refuses the delete.
+    on_delete: ?OnDelete = null,
+};
+
+pub const OnDelete = enum { cascade, nullify, restrict };
 
 pub const Default = union(enum) {
     literal: Literal,

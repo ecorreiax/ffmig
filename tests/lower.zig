@@ -215,6 +215,30 @@ fn wrap(comptime snippet: []const u8) []const u8 {
     return "migration M {\n  change {\n    " ++ snippet ++ "\n  }\n}\n";
 }
 
+test "references name their table by the plural rules" {
+    const cases = [_][2][]const u8{
+        .{ "user", "users" },
+        .{ "key", "keys" },
+        .{ "category", "categories" },
+        .{ "address", "addresses" },
+        .{ "box", "boxes" },
+        .{ "quiz", "quizes" },
+        .{ "match", "matches" },
+        .{ "wish", "wishes" },
+        .{ "y", "ys" },
+        .{ "person", "persons" },
+    };
+    inline for (cases) |c| {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var diag: Diagnostic = .{};
+        const source = comptime wrap("add_reference :t, :" ++ c[0]);
+        const column = (try lowerSource(arena.allocator(), source, &diag)).body.change[0].kind.add_column.column;
+        try testing.expectEqualStrings(c[0] ++ "_id", column.name);
+        try testing.expectEqualStrings(c[1], column.reference.?.foreign_key.?.table);
+    }
+}
+
 test "semantic errors" {
     // Source (see `wrap`), message, and the exact text of the span, which
     // must be the last occurrence of that text in the source.
@@ -292,6 +316,21 @@ test "semantic errors" {
         .{ "create_table :t { integer :role, default: :now }", "default ':now' is not allowed on integer column 'role'", ":now" },
         .{ "add_column :t, :c, :integer, null: false, default: nil", "default: nil on non-null column 'c'", "nil" },
         .{ "add_column :t, :c, :integer, default: nil, null: false", "default: nil on non-null column 'c'", "nil" },
+        // References.
+        .{ "create_table :t { references :user_id }", "reference ':user_id' already ends in '_id'; write ':user'", ":user_id" },
+        .{ "create_table :t { references }", "references expects 1 argument (:name), got 0", "references" },
+        .{ "create_table :t { references :user {} }", "references takes no block", "references" },
+        .{ "create_table :t { references :user, limit: 5 }", "unknown option 'limit' for references", "limit:" },
+        .{ "create_table :t { add_reference :t, :user }", "add_reference is not allowed inside a table block", "add_reference" },
+        .{ "add_reference :t, :user, type: :integer", "'type:' must be :bigint or :uuid", ":integer" },
+        .{ "add_reference :t, :user, to: \"users\"", "'to:' must be a symbol", "\"users\"" },
+        .{ "add_reference :t, :user, index: nil", "'index:' must be true, false or :unique", "nil" },
+        .{ "add_reference :t, :user, index: :primary", "'index:' must be true, false or :unique", ":primary" },
+        .{ "add_reference :t, :user, on_delete: :delete", "'on_delete:' must be :cascade, :nullify or :restrict", ":delete" },
+        .{ "add_reference :t, :user, null: false, on_delete: :nullify", "on_delete: :nullify on non-null column 'user_id'", ":nullify" },
+        .{ "add_reference :t, :user, foreign_key: false, to: :people", "'to:' needs a foreign key", "to:" },
+        .{ "add_reference :t, :user, foreign_key: false, on_delete: :cascade", "'on_delete:' needs a foreign key", "on_delete:" },
+        .{ "remove_reference :t, :user, :bigint", "remove_reference expects 2 arguments (:table, :name), got 3", "remove_reference" },
     };
     inline for (cases) |c| {
         const source = comptime wrap(c[0]);

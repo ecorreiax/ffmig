@@ -1,0 +1,10 @@
+migration CreateSessions
+  change
+    create_table sessions id=uuid
+      column user_id uuid not_null reference fk=users on_delete=cascade index
+      column category_id bigint null reference fk=categories index
+      column device_id bigint null reference fk=devices unique_index
+      column address_id bigint null reference index
+      column key_id bigint null reference fk=keys on_delete=nullify
+      column author_id bigint null reference fk=users on_delete=restrict index
+      column ip_address string null

@@ -1,5 +1,6 @@
 //! SQL generation. Turns `ast.Operation`s into SQL statements for one
-//! dialect, one statement per operation, each ending with `;\n`.
+//! dialect, each ending with `;\n`: one per operation, plus an index
+//! statement per reference (see `Statements`).
 //!
 //! This file holds what every dialect shares: the shape of each statement
 //! and default index names. Each dialect file (`postgres.zig`) holds only
@@ -134,11 +135,57 @@ fn database(comptime D: type, d: Database, w: *Writer) Writer.Error!void {
 
 /// `D` is a dialect file; see `postgres.zig` for the functions it provides.
 fn writeAll(comptime D: type, ops: []const ast.Operation, w: *Writer) Writer.Error!void {
-    for (ops) |op| {
+    var it: Statements = .{ .ops = ops };
+    while (it.next()) |op| {
         try statement(D, op.kind, w);
         try w.writeAll(";\n");
     }
 }
+
+/// The operations that `ops` run as, one statement each: every operation,
+/// each followed by an `add_index` for every reference column it adds
+/// with `index: true` or `index: :unique`. Dropping a table or column drops its indexes, so
+/// removals add nothing.
+pub const Statements = struct {
+    ops: []const ast.Operation,
+    op: usize = 0,
+    /// The next column of `ops[op]` to look at, once `ops[op]` itself has
+    /// been returned.
+    column: ?usize = null,
+
+    pub fn next(s: *Statements) ?ast.Operation {
+        while (s.op < s.ops.len) {
+            const op = &s.ops[s.op];
+            const i = s.column orelse {
+                s.column = 0;
+                return op.*;
+            };
+            const table, const columns = added(&op.kind);
+            if (i < columns.len) {
+                s.column = i + 1;
+                const r = columns[i].reference orelse continue;
+                if (r.index == .none) continue;
+                return .{ .span = op.span, .kind = .{ .add_index = .{
+                    .table = table,
+                    .column = columns[i].name,
+                    .unique = r.index == .unique,
+                } } };
+            }
+            s.op += 1;
+            s.column = null;
+        }
+        return null;
+    }
+
+    /// The table and the columns that `kind` adds.
+    fn added(kind: *const ast.Operation.Kind) struct { []const u8, []const ast.Column } {
+        return switch (kind.*) {
+            .create_table => |*o| .{ o.table, o.columns },
+            .add_column => |*o| .{ o.table, (&o.column)[0..1] },
+            else => .{ "", &.{} },
+        };
+    }
+};
 
 /// Writes one operation as a single statement, without a trailing `;`.
 pub fn writeStatement(dialect: Dialect, op: ast.Operation, w: *Writer) Writer.Error!void {
@@ -162,7 +209,7 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
             }
             for (o.columns) |c| {
                 try w.writeAll(if (first) "\n  " else ",\n  ");
-                try column(D, c, w);
+                try column(D, o.table, c, w);
                 first = false;
             }
             try w.writeAll("\n)");
@@ -174,7 +221,7 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
         .add_column => |o| {
             try alterTable(D, o.table, w);
             try w.writeAll(" ADD COLUMN ");
-            try column(D, o.column, w);
+            try column(D, o.table, o.column, w);
         },
         .remove_column => |o| {
             try alterTable(D, o.table, w);
@@ -216,8 +263,9 @@ fn indexName(comptime D: type, table: []const u8, col: []const u8, name: ?[]cons
     try D.identifierParts(w, &.{ "index_", table, "_on_", col });
 }
 
-/// `"name" type [DEFAULT value] [NOT NULL]`
-fn column(comptime D: type, c: ast.Column, w: *Writer) Writer.Error!void {
+/// `"name" type [DEFAULT value] [NOT NULL] [foreign key]`, for a column of
+/// `table`.
+fn column(comptime D: type, table: []const u8, c: ast.Column, w: *Writer) Writer.Error!void {
     try D.identifier(w, c.name);
     try w.writeByte(' ');
     try D.columnType(w, c);
@@ -229,4 +277,18 @@ fn column(comptime D: type, c: ast.Column, w: *Writer) Writer.Error!void {
         }
     }
     if (!c.null) try w.writeAll(" NOT NULL");
+    const r = c.reference orelse return;
+    const fk = r.foreign_key orelse return;
+    try w.writeAll(" CONSTRAINT ");
+    try D.identifierParts(w, &.{ "fk_", table, "_on_", c.name });
+    try w.writeAll(" REFERENCES ");
+    try D.identifier(w, fk.table);
+    try w.writeAll(" (");
+    try D.identifier(w, "id");
+    try w.writeByte(')');
+    if (fk.on_delete) |a| try w.writeAll(switch (a) {
+        .cascade => " ON DELETE CASCADE",
+        .nullify => " ON DELETE SET NULL",
+        .restrict => " ON DELETE RESTRICT",
+    });
 }

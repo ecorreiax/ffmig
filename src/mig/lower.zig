@@ -21,10 +21,13 @@ pub fn lower(arena: Allocator, file: syntax.File, diag: *Diagnostic) Error!ast.M
     return .{ .name = file.name, .body = try l.lowerBody(file.sections) };
 }
 
-const OpName = std.meta.Tag(ast.Operation.Kind);
+/// The operations a section may hold. `add_reference` and
+/// `remove_reference` lower to `add_column` and `remove_column`.
+const OpName = enum { create_table, drop_table, add_column, remove_column, rename_column, add_index, remove_index, add_reference, remove_reference };
 
 const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale" };
 const index_options = [_][]const u8{ "unique", "name" };
+const reference_options = [_][]const u8{ "type", "to", "null", "foreign_key", "index", "on_delete" };
 
 const Lowerer = struct {
     arena: Allocator,
@@ -73,6 +76,8 @@ const Lowerer = struct {
             .rename_column => .{ .rename_column = try l.lowerRenameColumn(call) },
             .add_index => .{ .add_index = try l.lowerAddIndex(call) },
             .remove_index => .{ .remove_index = try l.lowerRemoveIndex(call) },
+            .add_reference => .{ .add_column = try l.lowerAddReference(call) },
+            .remove_reference => .{ .remove_column = try l.lowerRemoveReference(call) },
         };
         return .{ .kind = kind, .span = call.span };
     }
@@ -163,8 +168,28 @@ const Lowerer = struct {
         };
     }
 
-    /// The statements of a `create_table` / `drop_table` block: `<type> :name, opts`
-    /// or `timestamps`.
+    fn lowerAddReference(l: *Lowerer, call: syntax.Call) Error!ast.AddColumn {
+        const table, const column = try l.lowerReferenceOperation(call);
+        return .{ .table = table, .column = column };
+    }
+
+    fn lowerRemoveReference(l: *Lowerer, call: syntax.Call) Error!ast.RemoveColumn {
+        const table, const column = try l.lowerReferenceOperation(call);
+        return .{ .table = table, .name = column.name, .column = column };
+    }
+
+    /// `add_reference` / `remove_reference :table, :name, opts`.
+    fn lowerReferenceOperation(l: *Lowerer, call: syntax.Call) Error!struct { []const u8, ast.Column } {
+        try l.expectArgCount(call, 2, 2, ":table, :name");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const name = try l.expectSymbol(call, 1, ":name");
+        try l.checkOptions(call, &reference_options);
+        try l.expectNoBlock(call);
+        return .{ table, try l.lowerReference(name, call.args[1].span, call.options, call.span) };
+    }
+
+    /// The statements of a `create_table` / `drop_table` block: `<type> :name, opts`,
+    /// `references :name, opts` or `timestamps`.
     fn lowerColumns(l: *Lowerer, table: []const u8, id: ast.IdKind, calls: []const syntax.Call) Error![]ast.Column {
         var columns: std.ArrayList(ast.Column) = .empty;
         for (calls) |call| {
@@ -177,6 +202,16 @@ const Lowerer = struct {
                     const column: ast.Column = .{ .name = name, .type = .datetime, .null = false, .span = call.span };
                     try l.appendColumn(&columns, table, id, column, call.name_span);
                 }
+                continue;
+            }
+
+            if (std.mem.eql(u8, call.name, "references")) {
+                try l.expectArgCount(call, 1, 1, ":name");
+                const name = try l.expectSymbol(call, 0, ":name");
+                try l.checkOptions(call, &reference_options);
+                try l.expectNoBlock(call);
+                const column = try l.lowerReference(name, call.args[0].span, call.options, call.span);
+                try l.appendColumn(&columns, table, id, column, call.args[0].span);
                 continue;
             }
 
@@ -236,6 +271,55 @@ const Lowerer = struct {
             column.scale = try l.integer(opt, u8, 0, precision);
         }
         if (findOption(options, "default")) |opt| column.default = try l.lowerDefault(opt.value, column);
+        return column;
+    }
+
+    /// The `<name>_id` column of a reference, from reference options already
+    /// checked for unknown and duplicate keys. `name_span` is where `name` is.
+    fn lowerReference(
+        l: *Lowerer,
+        name: []const u8,
+        name_span: Span,
+        options: []const syntax.Option,
+        span: Span,
+    ) Error!ast.Column {
+        if (name.len > "_id".len and std.mem.endsWith(u8, name, "_id")) {
+            return l.fail(name_span, "reference ':{s}' already ends in '_id'; write ':{s}'", .{ name, name[0 .. name.len - "_id".len] });
+        }
+        var column: ast.Column = .{
+            .name = try std.mem.concat(l.arena, u8, &.{ name, "_id" }),
+            .type = try l.optionReferenceType(options),
+            .span = span,
+        };
+        if (try l.optionBool(options, "null")) |n| column.null = n;
+
+        var reference: ast.Reference = .{
+            .foreign_key = null,
+            .index = try l.optionReferenceIndex(options),
+        };
+        if (try l.optionBool(options, "foreign_key") orelse true) {
+            var foreign_key: ast.ForeignKey = .{ .table = undefined };
+            if (findOption(options, "to")) |opt| {
+                foreign_key.table = switch (opt.value.kind) {
+                    .symbol => |s| s,
+                    else => return l.fail(opt.value.span, "'to:' must be a symbol", .{}),
+                };
+            } else foreign_key.table = try tableName(l.arena, name);
+            if (findOption(options, "on_delete")) |opt| {
+                const on_delete = switch (opt.value.kind) {
+                    .symbol => |s| std.meta.stringToEnum(ast.OnDelete, s),
+                    else => null,
+                } orelse return l.fail(opt.value.span, "'on_delete:' must be :cascade, :nullify or :restrict", .{});
+                if (on_delete == .nullify and !column.null) {
+                    return l.fail(opt.value.span, "on_delete: :nullify on non-null column '{s}'", .{column.name});
+                }
+                foreign_key.on_delete = on_delete;
+            }
+            reference.foreign_key = foreign_key;
+        } else for ([_][]const u8{ "to", "on_delete" }) |key| {
+            if (findOption(options, key)) |opt| return l.fail(labelSpan(opt), "'{s}:' needs a foreign key", .{key});
+        }
+        column.reference = reference;
         return column;
     }
 
@@ -332,6 +416,28 @@ const Lowerer = struct {
         return l.fail(opt.value.span, "'id:' must be :bigint, :uuid or false", .{});
     }
 
+    /// A reference's `type:`: `:bigint` (the default) or `:uuid`.
+    fn optionReferenceType(l: *Lowerer, options: []const syntax.Option) Error!ast.ColumnType {
+        const opt = findOption(options, "type") orelse return .bigint;
+        if (opt.value.kind == .symbol) {
+            const s = opt.value.kind.symbol;
+            if (std.mem.eql(u8, s, "bigint")) return .bigint;
+            if (std.mem.eql(u8, s, "uuid")) return .uuid;
+        }
+        return l.fail(opt.value.span, "'type:' must be :bigint or :uuid", .{});
+    }
+
+    /// A reference's `index:`: `true` (the default), `false` or `:unique`.
+    fn optionReferenceIndex(l: *Lowerer, options: []const syntax.Option) Error!ast.ReferenceIndex {
+        const opt = findOption(options, "index") orelse return .plain;
+        switch (opt.value.kind) {
+            .boolean => |b| return if (b) .plain else .none,
+            .symbol => |s| if (std.mem.eql(u8, s, "unique")) return .unique,
+            else => {},
+        }
+        return l.fail(opt.value.span, "'index:' must be true, false or :unique", .{});
+    }
+
     fn optionBool(l: *Lowerer, options: []const syntax.Option, key: []const u8) Error!?bool {
         const opt = findOption(options, key) orelse return null;
         return switch (opt.value.kind) {
@@ -362,6 +468,18 @@ const Lowerer = struct {
         return error.InvalidMigration;
     }
 };
+
+/// The table a reference named `name` points at without `to:`, by the
+/// rules in "Table names" in `docs/mig.md`.
+fn tableName(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
+    if (name.len >= 2 and name[name.len - 1] == 'y' and std.mem.indexOfScalar(u8, "aeiou", name[name.len - 2]) == null) {
+        return std.mem.concat(arena, u8, &.{ name[0 .. name.len - 1], "ies" });
+    }
+    for ([_][]const u8{ "s", "x", "z", "ch", "sh" }) |ending| {
+        if (std.mem.endsWith(u8, name, ending)) return std.mem.concat(arena, u8, &.{ name, "es" });
+    }
+    return std.mem.concat(arena, u8, &.{ name, "s" });
+}
 
 fn findOption(options: []const syntax.Option, key: []const u8) ?syntax.Option {
     for (options) |opt| {

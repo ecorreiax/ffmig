@@ -148,6 +148,8 @@ generating SQL; the file itself stays valid.
 | `rename_column` | `:table, :from, :to`            | none                                   | none  |
 | `add_index`     | `:table, :column`               | `unique:`, `name:`                     | none  |
 | `remove_index`  | `:table [, :column]`            | `unique:`, `name:`                     | none  |
+| `add_reference` | `:table, :name`                 | reference options                      | none  |
+| `remove_reference` | `:table, :name`              | reference options                      | none  |
 
 Common rules:
 
@@ -219,13 +221,29 @@ remove_index :users, name: "users_email_key"
   removed, like `remove_column` does with a type. See
   [Reversibility](#reversibility).
 
+### `add_reference` / `remove_reference`
+
+```
+add_reference :posts, :user, null: false, on_delete: :cascade
+remove_reference :posts, :user, null: false, on_delete: :cascade
+```
+
+- `add_reference :t, :name, opts` adds the same column, foreign key and
+  index as `references :name, opts` inside a `create_table :t` block (see
+  [References](#references)). It lowers to an `add_column` of that column.
+- `remove_reference` drops the column, which drops its foreign key and
+  index with it. It lowers to a `remove_column` that describes the column.
+  Every reference option has a default, so it is always reversible: the
+  undo recreates the reference exactly as written, like `remove_index`.
+
 ## Table blocks
 
-Inside a `create_table` or `drop_table` block, each statement is either a
-column or `timestamps`:
+Inside a `create_table` or `drop_table` block, each statement is a
+column, a reference or `timestamps`:
 
 ```
 <type> :name [, column options]
+references :name [, reference options]
 timestamps
 ```
 
@@ -236,7 +254,8 @@ timestamps
   both `datetime, null: false` with no default.
 - Column statements take no block.
 - A column name may appear only once per table, counting the two
-  `timestamps` columns: `column 'email' defined twice in table 'users'`.
+  `timestamps` columns and the `<name>_id` column of each reference:
+  `column 'email' defined twice in table 'users'`.
 - Unless `id: false`, a column named `id` is a duplicate of the primary
   key and is rejected the same way.
 - Operations (`add_index`, ...) are not allowed inside a table block.
@@ -271,6 +290,94 @@ timestamps
 
 For example `limit: 10` on an `integer` column is an error, and so is
 `scale: 2` without `precision:`.
+
+## References
+
+A reference is a column that points at the `id` of another table's row:
+
+```
+create_table :sessions, id: :uuid {
+  references :user, null: false, type: :uuid, on_delete: :cascade
+  string :ip_address
+}
+```
+
+`references` is not a column type. It stands for three things, each
+named after the table it is in (here `sessions`):
+
+| What          | Here                                              | Default |
+|---------------|---------------------------------------------------|---------|
+| a column      | `user_id`, of `type:`, with `null:`               | always  |
+| a foreign key | `fk_sessions_on_user_id`, on `user_id`, to `users(id)` | on, off with `foreign_key: false` |
+| an index      | `index_sessions_on_user_id`, on `user_id`         | on, off with `index: false`, unique with `index: :unique` |
+
+The name is written without `_id`, which the column adds:
+`references :user_id` is an error.
+
+### Reference options
+
+| Option         | Value                                   | Default |
+|----------------|-----------------------------------------|---------|
+| `type:`        | `:bigint` or `:uuid`                    | `:bigint` |
+| `to:`          | symbol: the table the foreign key points at | the plural of the name |
+| `null:`        | `true` or `false`                       | `true`  |
+| `foreign_key:` | `true` or `false`                       | `true`  |
+| `index:`       | `true`, `false` or `:unique`            | `true`  |
+| `on_delete:`   | `:cascade`, `:nullify` or `:restrict`   | none    |
+
+- `type:` must match the `id:` of the table pointed at. ffmig checks each
+  file on its own, so it cannot see that table and does not check this;
+  the database does.
+- `on_delete:` says what happens to this row when the row it points at is
+  deleted: `:cascade` deletes it too, `:nullify` sets the column to null,
+  `:restrict` refuses the delete. Without it the database refuses the
+  delete (its `NO ACTION` default). `:nullify` is an error on a
+  `null: false` column.
+- `to:` and `on_delete:` describe the foreign key, so they are errors with
+  `foreign_key: false`.
+- `index: :unique` makes the index unique, for a one-to-one relation
+  (`references :user, index: :unique` in `create_table :profiles`: each
+  user has at most one profile). Use it rather than `index: false` plus a
+  unique `add_index`, which is the same index written twice as long.
+- The foreign key points at `id`; other columns are not supported.
+
+### Table names
+
+Without `to:`, the table is the plural of the name, by these rules only:
+
+| Name ends in                     | Plural             | Example                  |
+|----------------------------------|--------------------|--------------------------|
+| a consonant followed by `y`      | `y` becomes `ies`  | `category` → `categories` |
+| `s`, `x`, `z`, `ch` or `sh`      | add `es`           | `address` → `addresses`  |
+| anything else                    | add `s`            | `user` → `users`, `key` → `keys` |
+
+Anything these rules get wrong needs `to:`: `references :person, to:
+:people`, `references :author, to: :users`. A wrong table fails in the
+database (`relation "persons" does not exist`), and the migration's
+transaction rolls it back.
+
+### SQL
+
+The foreign key is written with the column, so a reference in a
+`create_table` block may point at the table being created
+(`references :parent, to: :comments` inside `create_table :comments`).
+The index is a separate statement right after the `create_table` or
+`add_column`. Dropping the table or the column drops both, so
+`drop_table` and `remove_column` need nothing extra.
+
+```sql
+CREATE TABLE "sessions" (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "user_id" uuid NOT NULL CONSTRAINT "fk_sessions_on_user_id" REFERENCES "users" ("id") ON DELETE CASCADE,
+  "ip_address" varchar
+);
+CREATE INDEX "index_sessions_on_user_id" ON "sessions" ("user_id");
+```
+
+Two tables that point at each other cannot both be created with
+`references`, since the second does not exist yet when the first is
+created. That needs a separate foreign key operation, which the language
+does not have yet.
 
 ## Column defaults
 
@@ -336,6 +443,8 @@ everything needed to undo it:
 | `add_index :t, :c, opts`             | `remove_index :t, :c, opts`              |
 | `remove_index :t, :c, opts`          | `add_index :t, :c, opts`                 |
 | `remove_index :t, name: "n"`         | **irreversible**                         |
+| `add_reference :t, :name, opts`      | `remove_reference :t, :name, opts`       |
+| `remove_reference :t, :name, opts`   | `add_reference :t, :name, opts`          |
 
 `remove_index` and `unique:`: `remove_index` accepts `unique:` and is
 reversible whenever it has a column. The undo recreates the index exactly
@@ -416,6 +525,11 @@ Each of these is rejected; the message is what `ffmig check` reports.
 | `add_column :t, :role, :integer, default: :now`     | `default ':now' is not allowed on integer column 'role'` |
 | `add_column :t, :c, :integer, null: false, default: nil` | `default: nil on non-null column 'c'` |
 | `remove_index :users`                               | `remove_index needs a column or 'name:'` |
+| `create_table :t { references :user_id }`           | `reference ':user_id' already ends in '_id'; write ':user'` |
+| `add_reference :t, :user, type: :integer`           | `'type:' must be :bigint or :uuid` |
+| `add_reference :t, :user, index: :primary`          | `'index:' must be true, false or :unique` |
+| `add_reference :t, :user, null: false, on_delete: :nullify` | `on_delete: :nullify on non-null column 'user_id'` |
+| `add_reference :t, :user, foreign_key: false, to: :people` | `'to:' needs a foreign key` |
 | `create_table :t, id: :integer { }`                 | `id:` must be `:bigint`, `:uuid` or `false` |
 | `add_index :t, [:a, :b]`                            | syntax error: `[` is reserved |
 | `migration M { }`                                   | syntax error: expected `change`, `up` or `down` |

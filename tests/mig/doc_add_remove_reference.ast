@@ -1,0 +1,6 @@
+migration MovePostsToAccounts
+  change
+    add_column posts
+      column account_id uuid not_null reference fk=accounts index
+    remove_column posts user_id
+      column user_id bigint null reference fk=users on_delete=cascade index

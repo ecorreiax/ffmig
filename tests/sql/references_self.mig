@@ -1,0 +1,8 @@
+migration CreateComments {
+  change {
+    create_table :comments {
+      references :parent, to: :comments, on_delete: :cascade
+      text :body
+    }
+  }
+}

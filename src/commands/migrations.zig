@@ -248,10 +248,15 @@ pub fn apply(
     };
 
     var statement: Writer.Allocating = .init(arena);
-    for (0..ops.len + 1) |i| {
+    var it: sql.Statements = .{ .ops = ops };
+    var done = false;
+    while (!done) {
         statement.clearRetainingCapacity();
         const w = &statement.writer;
-        const written = if (i < ops.len) sql.writeStatement(conn.dialect, ops[i], w) else sql.writeTracking(conn.dialect, tracking, w);
+        const written = if (it.next()) |op| sql.writeStatement(conn.dialect, op, w) else blk: {
+            done = true;
+            break :blk sql.writeTracking(conn.dialect, tracking, w);
+        };
         written catch {
             try outOfMemory(err);
             return false;

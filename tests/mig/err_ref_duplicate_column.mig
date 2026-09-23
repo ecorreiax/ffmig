@@ -1,0 +1,6 @@
+migration M {
+  change {
+    create_table :t { bigint :user_id
+      references :user }
+  }
+}
