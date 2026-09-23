@@ -19,5 +19,6 @@ test {
     _ = @import("lexer.zig");
     _ = @import("parser.zig");
     _ = @import("lower.zig");
+    _ = @import("reverse.zig");
     _ = @import("mig.zig");
 }

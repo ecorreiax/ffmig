@@ -1,8 +1,9 @@
-//! `ffmig check [--ast] [file...]`
+//! `ffmig check [--ast] [--down] [file...]`
 //!
 //! Parses and lowers `.mig` files and reports the first error in each, as
 //! `<file>:<line>:<col>: <message>` followed by the source line and a
-//! caret under the span. Without files, checks every `*.mig` in the
+//! caret under the span. A `change` operation that cannot be undone is
+//! reported the same way as a warning; the file still passes. Without files, checks every `*.mig` in the
 //! configured migrations directory in file-name (timestamp) order. Keeps
 //! going after a broken file so one run reports all of them.
 
@@ -15,18 +16,28 @@ const config = @import("../utils/config.zig");
 const fs = @import("../utils/fs.zig");
 const mig = @import("../mig/root.zig");
 
-pub const usage = "Usage: ffmig check [--ast] [file...]\n";
+pub const usage = "Usage: ffmig check [--ast] [--down] [file...]\n";
+
+const Options = struct {
+    /// Print the lowered AST.
+    ast: bool = false,
+    /// Print the AST as `up` / `down` sections, deriving `down` for
+    /// `change`. Implies `ast`.
+    down: bool = false,
+};
 
 /// Spans are `u32` offsets; real migrations are far smaller than this.
 const max_source_size = 16 * 1024 * 1024;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
-    var print_ast = false;
+    var opts: Options = .{};
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(env.gpa);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--ast")) {
-            print_ast = true;
+            opts.ast = true;
+        } else if (std.mem.eql(u8, arg, "--down")) {
+            opts.down = true;
         } else if (std.mem.startsWith(u8, arg, "--")) {
             try err.writeAll(usage);
             return 1;
@@ -35,7 +46,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
         }
     }
 
-    if (files.items.len > 0) return checkFiles(env, env.cwd, "", files.items, print_ast, out, err);
+    if (files.items.len > 0) return checkFiles(env, env.cwd, "", files.items, opts, out, err);
 
     var diag: config.Diagnostics = .{};
     const cfg = config.load(env.io, env.cwd, env.gpa, &diag) catch |e| {
@@ -63,7 +74,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
             return 1;
         },
     };
-    return checkFiles(env, dir, cfg.path, names, print_ast, out, err);
+    return checkFiles(env, dir, cfg.path, names, opts, out, err);
 }
 
 /// Names of the `*.mig` files in `dir`, sorted.
@@ -89,7 +100,7 @@ fn checkFiles(
     dir: Io.Dir,
     prefix: []const u8,
     paths: []const []const u8,
-    print_ast: bool,
+    opts: Options,
     out: *Writer,
     err: *Writer,
 ) Writer.Error!u8 {
@@ -101,7 +112,7 @@ fn checkFiles(
         _ = arena_state.reset(.retain_capacity);
         const shown = if (prefix.len == 0) path else std.fs.path.join(arena_state.allocator(), &.{ prefix, path }) catch
             return outOfMemory(err);
-        const ok = try checkFile(env.io, dir, path, shown, arena_state.allocator(), print_ast, out, err);
+        const ok = try checkFile(env.io, dir, path, shown, arena_state.allocator(), opts, out, err);
         if (!ok) status = 1;
     }
     return status;
@@ -113,7 +124,7 @@ fn checkFile(
     path: []const u8,
     shown: []const u8,
     arena: Allocator,
-    print_ast: bool,
+    opts: Options,
     out: *Writer,
     err: *Writer,
 ) Writer.Error!bool {
@@ -129,23 +140,44 @@ fn checkFile(
             return false;
         },
         error.InvalidSyntax, error.InvalidMigration => {
-            try report(err, shown, source, diag);
+            try report(err, shown, source, diag.span, "{s}", .{diag.message});
             return false;
         },
     };
 
     try out.print("ok {s}\n", .{shown});
-    if (print_ast) try mig.print.migration(out, migration);
+    const plan: ?mig.reverse.Plan = mig.reverse.plan(arena, migration, &diag) catch |e| switch (e) {
+        error.OutOfMemory => {
+            try err.print("ffmig: out of memory checking {s}\n", .{shown});
+            return false;
+        },
+        error.Irreversible => blk: {
+            try report(err, shown, source, diag.span, "warning: {s}; use 'up' / 'down' blocks to make it reversible", .{diag.message});
+            break :blk null;
+        },
+    };
+    if (opts.down and plan != null) {
+        try mig.print.plan(out, migration.name, plan.?);
+    } else if (opts.ast or opts.down) {
+        try mig.print.migration(out, migration);
+    }
     return true;
 }
 
 /// `file:line:col: message`, then the source line and a caret under the
 /// part of the span that is on that line.
-fn report(err: *Writer, shown: []const u8, source: []const u8, diag: mig.Diagnostic) Writer.Error!void {
-    const pos = mig.token.lineCol(source, diag.span.start);
-    try err.print("{s}:{d}:{d}: {s}\n", .{ shown, pos.line, pos.col, diag.message });
+fn report(
+    err: *Writer,
+    shown: []const u8,
+    source: []const u8,
+    span: mig.token.Span,
+    comptime fmt: []const u8,
+    args: anytype,
+) Writer.Error!void {
+    const pos = mig.token.lineCol(source, span.start);
+    try err.print("{s}:{d}:{d}: " ++ fmt ++ "\n", .{ shown, pos.line, pos.col } ++ args);
 
-    const start = @min(diag.span.start, source.len);
+    const start = @min(span.start, source.len);
     const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..start], '\n')) |i| i + 1 else 0;
     const line_end = std.mem.indexOfScalarPos(u8, source, start, '\n') orelse source.len;
     const line = std.mem.trimEnd(u8, source[line_start..line_end], "\r");
@@ -154,7 +186,7 @@ fn report(err: *Writer, shown: []const u8, source: []const u8, diag: mig.Diagnos
     // Keep tabs so the caret lines up with the source line.
     for (source[line_start..start]) |c| try err.writeByte(if (c == '\t') '\t' else ' ');
     try err.writeByte('^');
-    const end = @min(diag.span.end, line_start + line.len);
+    const end = @min(span.end, line_start + line.len);
     if (end > start + 1) try err.splatByteAll('~', end - start - 1);
     try err.writeByte('\n');
 }

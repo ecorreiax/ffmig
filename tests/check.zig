@@ -166,6 +166,73 @@ test "check --ast prints the lowered migration" {
     , r.out.written());
 }
 
+test "check warns about an irreversible change and still passes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.mig", "migration DropUsers {\n  change {\n    drop_table :users\n  }\n}\n");
+
+    var r = try checkIn(tmp.dir, &.{"a.mig"});
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings("ok a.mig\n", r.out.written());
+    try testing.expectEqualStrings(
+        \\a.mig:3:5: warning: drop_table without a column block is irreversible; use 'up' / 'down' blocks to make it reversible
+        \\    drop_table :users
+        \\    ^~~~~~~~~~~~~~~~~
+        \\
+    , r.err.written());
+}
+
+test "check --down prints the derived up and down" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.mig",
+        \\migration AddRole {
+        \\  change {
+        \\    add_column :users, :role, :integer
+        \\    add_index :users, :role
+        \\  }
+        \\}
+        \\
+    );
+
+    var r = try checkIn(tmp.dir, &.{ "--down", "a.mig" });
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\ok a.mig
+        \\migration AddRole
+        \\  up
+        \\    add_column users
+        \\      column role integer null
+        \\    add_index users role
+        \\  down
+        \\    remove_index users role
+        \\    remove_column users role
+        \\      column role integer null
+        \\
+    , r.out.written());
+    try testing.expectEqualStrings("", r.err.written());
+}
+
+test "check --down prints an irreversible change as written" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.mig", "migration M { change { remove_column :users, :bio } }\n");
+
+    var r = try checkIn(tmp.dir, &.{ "--down", "a.mig" });
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\ok a.mig
+        \\migration M
+        \\  change
+        \\    remove_column users bio
+        \\
+    , r.out.written());
+    try testing.expect(std.mem.indexOf(u8, r.err.written(), "warning: remove_column without a type is irreversible") != null);
+}
+
 test "check without files needs ffmig.toml" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -10,6 +10,7 @@ pub const print = @import("print.zig");
 pub const syntax = @import("syntax.zig");
 pub const parser = @import("parser.zig");
 pub const lower = @import("lower.zig");
+pub const reverse = @import("reverse.zig");
 
 pub const Diagnostic = parser.Diagnostic;
 pub const Error = parser.Error || lower.Error;

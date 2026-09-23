@@ -13,6 +13,7 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 const ast = @import("ast.zig");
+const reverse = @import("reverse.zig");
 
 pub fn migration(w: *Writer, m: ast.Migration) Writer.Error!void {
     try w.print("migration {s}\n", .{m.name});
@@ -23,6 +24,14 @@ pub fn migration(w: *Writer, m: ast.Migration) Writer.Error!void {
             try section(w, "down", b.down);
         },
     }
+}
+
+/// The migration as its `reverse.plan`: `up` and `down` sections, the
+/// same as an `up` / `down` migration prints.
+pub fn plan(w: *Writer, name: []const u8, p: reverse.Plan) Writer.Error!void {
+    try w.print("migration {s}\n", .{name});
+    try section(w, "up", p.up);
+    try section(w, "down", p.down);
 }
 
 fn section(w: *Writer, name: []const u8, ops: []const ast.Operation) Writer.Error!void {

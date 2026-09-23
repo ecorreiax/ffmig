@@ -15,6 +15,7 @@ pub const usage =
     \\  new <name>     Create a timestamped migration file, e.g. new create_users
     \\  check [files]  Check .mig files (default: all in the migrations directory)
     \\                   --ast         Print the parsed migration
+    \\                   --down        Print it as up / down, deriving down for change
     \\  help           Show this message
     \\
 ;
