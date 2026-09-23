@@ -8,3 +8,6 @@ result-*
 # CLI Generated files
 /migrations
 ffmig.toml
+
+# Agent files
+.plans
