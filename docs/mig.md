@@ -42,7 +42,8 @@ migration AddRoleToUsers {
   of the grammar accepts them yet, so any use is a syntax error.
 - Any other byte outside a string or comment (`@`, `=`, `;`, `.`, ...) is
   invalid. So are an unterminated string, a line break inside a string, an
-  unknown escape such as `\x`, a lone `:`, and an integer out of range.
+  unknown escape such as `\x`, a lone `:`, an integer out of range, and
+  an integer immediately followed by an identifier (`0abc`).
 
 ## Grammar
 

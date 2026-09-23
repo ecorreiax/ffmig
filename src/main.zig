@@ -27,4 +27,5 @@ test {
     _ = cli;
     _ = @import("utils/config.zig");
     _ = @import("utils/fs.zig");
+    _ = @import("mig/root.zig");
 }
