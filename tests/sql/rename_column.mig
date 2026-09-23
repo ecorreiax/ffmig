@@ -1,0 +1,5 @@
+migration M {
+  change {
+    rename_column :users, :name, :full_name
+  }
+}

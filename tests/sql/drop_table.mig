@@ -1,0 +1,8 @@
+migration DropUsers {
+  up {
+    drop_table :users
+  }
+  down {
+    create_table :users { string :email }
+  }
+}

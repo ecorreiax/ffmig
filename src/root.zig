@@ -6,3 +6,4 @@ pub const commands = @import("commands/root.zig");
 pub const config = @import("utils/config.zig");
 pub const fs = @import("utils/fs.zig");
 pub const mig = @import("mig/root.zig");
+pub const sql = @import("sql/root.zig");

@@ -6,7 +6,7 @@ const ffmig = @import("ffmig");
 
 test {
     // Analyze every public declaration so unused code still has to compile.
-    inline for (.{ ffmig, ffmig.cli, ffmig.commands, ffmig.config, ffmig.fs, ffmig.mig }) |module| {
+    inline for (.{ ffmig, ffmig.cli, ffmig.commands, ffmig.config, ffmig.fs, ffmig.mig, ffmig.sql }) |module| {
         std.testing.refAllDecls(module);
     }
     _ = @import("cli.zig");
@@ -21,4 +21,6 @@ test {
     _ = @import("lower.zig");
     _ = @import("reverse.zig");
     _ = @import("mig.zig");
+    _ = @import("sql.zig");
+    _ = @import("sql_command.zig");
 }

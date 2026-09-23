@@ -1,0 +1,131 @@
+const std = @import("std");
+const Writer = std.Io.Writer;
+const ffmig = @import("ffmig");
+const mig = ffmig.mig;
+const sql = ffmig.sql;
+const ast = mig.ast;
+const Diagnostic = mig.Diagnostic;
+
+const testing = std.testing;
+
+/// Parses the `change` migration `source` and writes its SQL for `dialect`.
+fn expectSql(dialect: sql.Dialect, source: []const u8, expected: []const u8) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: Diagnostic = .{};
+    const migration = try mig.parseMigration(arena, source, &diag);
+
+    var actual: Writer.Allocating = .init(arena);
+    try sql.write(dialect, migration.body.change, &actual.writer);
+    try testing.expectEqualStrings(expected, actual.written());
+}
+
+test "postgres quotes every identifier, including reserved words" {
+    try expectSql(.postgres,
+        \\migration M { change {
+        \\  add_column :select, :from, :string
+        \\  rename_column :select, :from, :to
+        \\  add_index :select, :to, name: "a\"b"
+        \\  remove_index :select, name: "a\"b"
+        \\} }
+    ,
+        \\ALTER TABLE "select" ADD COLUMN "from" varchar;
+        \\ALTER TABLE "select" RENAME COLUMN "from" TO "to";
+        \\CREATE INDEX "a""b" ON "select" ("to");
+        \\DROP INDEX "a""b";
+        \\
+    );
+}
+
+test "postgres doubles quotes in identifiers and default index names" {
+    const op: ast.Operation = .{ .span = .{ .start = 0, .end = 0 }, .kind = .{
+        .add_index = .{ .table = "we\"ird", .column = "\"", .unique = true },
+    } };
+    var actual: Writer.Allocating = .init(testing.allocator);
+    defer actual.deinit();
+    try sql.write(.postgres, &.{op}, &actual.writer);
+    try testing.expectEqualStrings(
+        \\CREATE UNIQUE INDEX "index_we""ird_on_""" ON "we""ird" ("""");
+        \\
+    , actual.written());
+}
+
+test "postgres escapes string literals by doubling single quotes" {
+    try expectSql(
+        .postgres,
+        \\migration M { change {
+        \\  add_column :users, :bio, :text, default: "it's a \"b\\c\"\n"
+        \\} }
+    ,
+        "ALTER TABLE \"users\" ADD COLUMN \"bio\" text DEFAULT 'it''s a \"b\\c\"\n';\n",
+    );
+}
+
+test "postgres writes an empty table without id as ()" {
+    try expectSql(.postgres, "migration M { change { create_table :t, id: false { } } }",
+        \\CREATE TABLE "t" ();
+        \\
+    );
+}
+
+test "capabilities" {
+    try testing.expect(sql.capabilities(.postgres).transactional_ddl);
+}
+
+/// Golden cases: each `<case>.mig` has a `<case>.<dialect>.sql` per
+/// dialect with the SQL for its `up` plan, then for its `down` plan (or
+/// the reason it has none). Read at test time from the project root.
+const golden_dir = "tests/sql";
+
+test "golden cases in tests/sql" {
+    const io = testing.io;
+    var dir = try std.Io.Dir.cwd().openDir(io, golden_dir, .{ .iterate = true });
+    defer dir.close(io);
+
+    var cases: usize = 0;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".mig")) continue;
+        inline for (comptime std.enums.values(sql.Dialect)) |dialect| {
+            errdefer std.debug.print("golden case: {s}/{s} ({t})\n", .{ golden_dir, entry.name, dialect });
+            try expectGolden(dir, entry.name, dialect);
+        }
+        cases += 1;
+    }
+    try testing.expect(cases > 0);
+}
+
+fn expectGolden(dir: std.Io.Dir, mig_name: []const u8, dialect: sql.Dialect) !void {
+    const io = testing.io;
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const source = try dir.readFileAlloc(io, mig_name, arena, .unlimited);
+    var diag: Diagnostic = .{};
+    const migration = try mig.parseMigration(arena, source, &diag);
+
+    var actual: Writer.Allocating = .init(arena);
+    const w = &actual.writer;
+    try w.writeAll("-- up\n");
+    try sql.write(dialect, switch (migration.body) {
+        .change => |ops| ops,
+        .up_down => |b| b.up,
+    }, w);
+    try w.writeAll("-- down\n");
+    if (mig.reverse.plan(arena, migration, &diag)) |p| {
+        try sql.write(dialect, p.down, w);
+    } else |err| switch (err) {
+        error.Irreversible => try w.print("-- {s}\n", .{diag.message}),
+        error.OutOfMemory => return err,
+    }
+
+    const stem = mig_name[0 .. mig_name.len - ".mig".len];
+    const expected_name = try std.fmt.allocPrint(arena, "{s}.{t}.sql", .{ stem, dialect });
+    const expected = dir.readFileAlloc(io, expected_name, arena, .unlimited) catch |err| {
+        std.debug.print("cannot read {s}/{s}: {t}; actual output:\n{s}", .{ golden_dir, expected_name, err, actual.written() });
+        return err;
+    };
+    try testing.expectEqualStrings(expected, actual.written());
+}

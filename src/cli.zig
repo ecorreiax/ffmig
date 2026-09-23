@@ -16,6 +16,8 @@ pub const usage =
     \\  check [files]  Check .mig files (default: all in the migrations directory)
     \\                   --ast         Print the parsed migration
     \\                   --down        Print it as up / down, deriving down for change
+    \\  sql <file>     Print the PostgreSQL for a migration's up plan
+    \\                   --down        Print the down plan instead
     \\  help           Show this message
     \\
 ;

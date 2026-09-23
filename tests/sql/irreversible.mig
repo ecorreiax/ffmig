@@ -1,0 +1,6 @@
+migration M {
+  change {
+    remove_index :users, name: "users_email_key"
+    drop_table :users
+  }
+}

@@ -1,0 +1,11 @@
+migration M {
+  change {
+    create_table :t {
+      string :code, limit: 10
+      decimal :price, precision: 8
+      decimal :total, precision: 10, scale: 2
+      integer :role, null: false
+      text :bio, default: nil
+    }
+  }
+}

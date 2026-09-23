@@ -27,7 +27,7 @@ const Options = struct {
 };
 
 /// Spans are `u32` offsets; real migrations are far smaller than this.
-const max_source_size = 16 * 1024 * 1024;
+pub const max_source_size = 16 * 1024 * 1024;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     var opts: Options = .{};
@@ -166,7 +166,7 @@ fn checkFile(
 
 /// `file:line:col: message`, then the source line and a caret under the
 /// part of the span that is on that line.
-fn report(
+pub fn report(
     err: *Writer,
     shown: []const u8,
     source: []const u8,

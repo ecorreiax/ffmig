@@ -1,0 +1,16 @@
+# Profiles for users, keyed by UUID.
+migration CreateUsersProfile {
+  change {
+    create_table :users_profile, id: :uuid {
+      string :name
+      string :email, null: false, limit: 255
+      integer :role, null: false, default: 0
+      boolean :active, default: true
+      decimal :balance, precision: 10, scale: 2, default: 0
+      json :settings, default: "{}"
+      datetime :confirmed_at, default: :now
+      timestamps
+    }
+    add_index :users_profile, :email, unique: true
+  }
+}

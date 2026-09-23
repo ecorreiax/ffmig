@@ -1,0 +1,8 @@
+migration M {
+  change {
+    drop_table :users, id: :uuid {
+      string :email, null: false
+      timestamps
+    }
+  }
+}
