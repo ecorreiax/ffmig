@@ -12,6 +12,7 @@ pub fn main(init: std.process.Init) !u8 {
     var stderr_writer: Io.File.Writer = .init(.stderr(), init.io, &stderr_buffer);
 
     const status = try cli.run(
+        .{ .io = init.io, .cwd = .cwd() },
         args[1..],
         &stdout_writer.interface,
         &stderr_writer.interface,

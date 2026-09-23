@@ -4,3 +4,7 @@ result
 result-*
 .direnv/
 /ffmig
+
+# CLI Generated files
+/migrations
+ffmig.toml

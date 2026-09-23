@@ -9,12 +9,14 @@ const usage =
     \\Usage: ffmig <command> [args]
     \\
     \\Commands:
-    \\  greet <name>   Say hello
+    \\  init           Create ffmig.toml and the migrations directory
+    \\                   --path <dir>  Migrations directory (default: migrations)
+    \\                   --url <url>   Database URL (default: ${DATABASE_URL})
     \\  help           Show this message
     \\
 ;
 
-pub fn run(args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
+pub fn run(env: commands.Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     if (args.len == 0) {
         try err.writeAll(usage);
         return 1;
@@ -31,7 +33,7 @@ pub fn run(args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8
             try out.writeAll(usage);
             return 0;
         },
-        else => commands.run(command, args[1..], out, err),
+        else => commands.run(env, command, args[1..], out, err),
     };
 }
 
@@ -43,13 +45,24 @@ fn expectRun(args: []const []const u8, code: u8, stdout: []const u8, stderr: []c
     var err: Writer.Allocating = .init(testing.allocator);
     defer err.deinit();
 
-    try testing.expectEqual(code, try run(args, &out.writer, &err.writer));
+    try testing.expectEqual(code, try run(.{ .io = testing.io, .cwd = std.Io.Dir.cwd() }, args, &out.writer, &err.writer));
     try testing.expectEqualStrings(stdout, out.written());
     try testing.expectEqualStrings(stderr, err.written());
 }
 
-test "dispatches to greet" {
-    try expectRun(&.{ "greet", "Ana" }, 0, "Hello, Ana!\n", "");
+test "dispatches to init" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    var err: Writer.Allocating = .init(testing.allocator);
+    defer err.deinit();
+
+    const env: commands.Env = .{ .io = testing.io, .cwd = tmp.dir };
+    try testing.expectEqual(0, try run(env, &.{"init"}, &out.writer, &err.writer));
+    try testing.expectEqualStrings("Created ffmig.toml\nCreated migrations/\n", out.written());
+    try testing.expectEqualStrings("", err.written());
 }
 
 test "help prints usage" {
