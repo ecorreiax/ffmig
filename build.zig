@@ -43,4 +43,19 @@ pub fn build(b: *std.Build) void {
     // Golden tests read `tests/mig` relative to the project root.
     run_tests.setCwd(b.path("."));
     test_step.dependOn(&run_tests.step);
+
+    // Needs a PostgreSQL server; `make integration` starts one.
+    const integration = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ffmig", .module = mod }},
+        }),
+    });
+    const integration_step = b.step("integration", "Run integration tests against PostgreSQL");
+    const run_integration = b.addRunArtifact(integration);
+    // The database is outside the build graph, so never reuse a result.
+    run_integration.has_side_effects = true;
+    integration_step.dependOn(&run_integration.step);
 }

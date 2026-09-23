@@ -29,8 +29,8 @@
         };
 
         devShells.default = pkgs.mkShell {
-          # libpq is linked by ffmig.
-          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq ];
+          # libpq is linked by ffmig; postgresql runs the integration tests.
+          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq pkgs.postgresql ];
         };
       });
 }
