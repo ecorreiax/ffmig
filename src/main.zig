@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const ffmig = @import("ffmig");
+const cli = @import("cli.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const arena = init.arena.allocator();
@@ -11,7 +11,7 @@ pub fn main(init: std.process.Init) !u8 {
     var stderr_buffer: [4096]u8 = undefined;
     var stderr_writer: Io.File.Writer = .init(.stderr(), init.io, &stderr_buffer);
 
-    const status = try ffmig.cli.run(
+    const status = try cli.run(
         args[1..],
         &stdout_writer.interface,
         &stderr_writer.interface,
@@ -20,4 +20,8 @@ pub fn main(init: std.process.Init) !u8 {
     try stdout_writer.interface.flush();
     try stderr_writer.interface.flush();
     return status;
+}
+
+test {
+    _ = cli;
 }

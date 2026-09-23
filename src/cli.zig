@@ -1,13 +1,9 @@
-//! Command-line dispatch. Takes already-split arguments and writers so it
+//! Command-line router. Takes already-split arguments and writers so it
 //! stays independent of the process and is easy to test.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
-
-pub const Command = enum {
-    greet,
-    help,
-};
+const commands = @import("commands/root.zig");
 
 const usage =
     \\Usage: ffmig <command> [args]
@@ -24,28 +20,19 @@ pub fn run(args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8
         return 1;
     }
 
-    const command = std.meta.stringToEnum(Command, args[0]) orelse {
+    const command = std.meta.stringToEnum(commands.Command, args[0]) orelse {
         try err.print("ffmig: unknown command '{s}'\n\n", .{args[0]});
         try err.writeAll(usage);
         return 1;
     };
 
     return switch (command) {
-        .greet => greet(args[1..], out, err),
         .help => {
             try out.writeAll(usage);
             return 0;
         },
+        else => commands.run(command, args[1..], out, err),
     };
-}
-
-fn greet(args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
-    if (args.len != 1) {
-        try err.writeAll("Usage: ffmig greet <name>\n");
-        return 1;
-    }
-    try out.print("Hello, {s}!\n", .{args[0]});
-    return 0;
 }
 
 const testing = std.testing;
@@ -61,12 +48,12 @@ fn expectRun(args: []const []const u8, code: u8, stdout: []const u8, stderr: []c
     try testing.expectEqualStrings(stderr, err.written());
 }
 
-test "greet prints a greeting" {
+test "dispatches to greet" {
     try expectRun(&.{ "greet", "Ana" }, 0, "Hello, Ana!\n", "");
 }
 
-test "greet without a name fails" {
-    try expectRun(&.{"greet"}, 1, "", "Usage: ffmig greet <name>\n");
+test "help prints usage" {
+    try expectRun(&.{"help"}, 0, usage, "");
 }
 
 test "unknown command fails" {
@@ -75,4 +62,9 @@ test "unknown command fails" {
 
 test "no command prints usage" {
     try expectRun(&.{}, 1, "", usage);
+}
+
+test {
+    testing.refAllDecls(@This());
+    _ = commands;
 }
