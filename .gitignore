@@ -1,0 +1,6 @@
+.zig-cache/
+zig-out/
+result
+result-*
+.direnv/
+/ffmig

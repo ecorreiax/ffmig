@@ -1,0 +1,23 @@
+const std = @import("std");
+const Io = std.Io;
+const ffmig = @import("ffmig");
+
+pub fn main(init: std.process.Init) !u8 {
+    const arena = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(arena);
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer: Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer: Io.File.Writer = .init(.stderr(), init.io, &stderr_buffer);
+
+    const status = try ffmig.cli.run(
+        args[1..],
+        &stdout_writer.interface,
+        &stderr_writer.interface,
+    );
+
+    try stdout_writer.interface.flush();
+    try stderr_writer.interface.flush();
+    return status;
+}
