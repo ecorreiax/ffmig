@@ -1,0 +1,3 @@
+migration M {
+  change {
+    add_column :t, :c, :string

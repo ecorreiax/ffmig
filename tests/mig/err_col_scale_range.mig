@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_column :t, :c, :decimal, precision: 5, scale: 6
+  }
+}

@@ -1,0 +1,6 @@
+migration M
+  change
+    create_table users id=uuid
+      column email string not_null
+      column created_at datetime not_null
+      column updated_at datetime not_null

@@ -1,0 +1,8 @@
+migration M {
+  change {
+    create_table :t {
+      datetime :updated_at
+      timestamps
+    }
+  }
+}

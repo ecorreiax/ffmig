@@ -1,0 +1,7 @@
+migration M {
+  change {
+    create_table :t {
+      integer :id
+    }
+  }
+}

@@ -1,0 +1,8 @@
+migration BackfillSlugs {
+  up {
+    add_column :posts, :slug, :string
+  }
+  down {
+    remove_column :posts, :slug
+  }
+}

@@ -1,0 +1,4 @@
+migration Commented
+  change
+    add_column t
+      column c string null default="# not a comment"

@@ -1,0 +1,13 @@
+migration CreateUsersProfile
+  change
+    create_table users_profile id=uuid
+      column name string null
+      column email string not_null limit=255
+      column role integer not_null default=0
+      column active boolean null default=true
+      column balance decimal null precision=10 scale=2 default=0
+      column settings json null default="{}"
+      column confirmed_at datetime null default=:now
+      column created_at datetime not_null
+      column updated_at datetime not_null
+    add_index users_profile email unique

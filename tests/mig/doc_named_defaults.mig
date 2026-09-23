@@ -1,0 +1,9 @@
+migration M {
+  change {
+    create_table :t {
+      datetime :published_at, default: :now
+      date :day, default: :now
+      time :tm, default: :now
+    }
+  }
+}

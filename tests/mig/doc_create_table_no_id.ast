@@ -1,0 +1,4 @@
+migration M
+  change
+    create_table t id=none
+      column id string null

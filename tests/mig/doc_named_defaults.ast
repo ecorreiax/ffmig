@@ -1,0 +1,6 @@
+migration M
+  change
+    create_table t id=bigint
+      column published_at datetime null default=:now
+      column day date null default=:now
+      column tm time null default=:now

@@ -1,0 +1,19 @@
+migration M {
+  change {
+    create_table :t {
+      string :s, default: "guest"
+      text :t, default: "a\"b\\c"
+      integer :i, default: -5
+      bigint :b, default: 9223372036854775807
+      float :f, default: 1
+      decimal :d, default: 0
+      boolean :active, default: false
+      date :day, default: "2026-01-01"
+      datetime :at, default: "2026-01-01 12:00:00"
+      time :tm, default: "12:00:00"
+      uuid :u, default: "00000000-0000-0000-0000-000000000000"
+      json :settings, default: "{}"
+      binary :blob, default: nil
+    }
+  }
+}

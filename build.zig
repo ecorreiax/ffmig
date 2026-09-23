@@ -22,5 +22,8 @@ pub fn build(b: *std.Build) void {
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    const run_tests = b.addRunArtifact(exe_tests);
+    // Golden tests read `tests/mig` relative to the project root.
+    run_tests.setCwd(b.path("."));
+    test_step.dependOn(&run_tests.step);
 }

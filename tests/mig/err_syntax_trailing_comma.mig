@@ -1,0 +1,6 @@
+migration M {
+  change {
+    add_index :users, :email,
+    add_index :a, :b
+  }
+}

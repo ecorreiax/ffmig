@@ -13,6 +13,8 @@ const usage =
     \\                   --path <dir>  Migrations directory (default: migrations)
     \\                   --url <url>   Database URL (default: ${DATABASE_URL})
     \\  new <name>     Create a timestamped migration file, e.g. new create_users
+    \\  check [files]  Check .mig files (default: all in the migrations directory)
+    \\                   --ast         Print the parsed migration
     \\  help           Show this message
     \\
 ;

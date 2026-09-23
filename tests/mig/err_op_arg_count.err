@@ -1,0 +1,1 @@
+3:5: add_column expects 3 arguments (:table, :column, :type), got 2

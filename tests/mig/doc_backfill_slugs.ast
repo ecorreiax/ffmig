@@ -1,0 +1,6 @@
+migration BackfillSlugs
+  up
+    add_column posts
+      column slug string null
+  down
+    remove_column posts slug

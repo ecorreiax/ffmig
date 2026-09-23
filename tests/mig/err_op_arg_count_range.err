@@ -1,0 +1,1 @@
+3:5: remove_index expects 1 or 2 arguments (:table [, :column]), got 3

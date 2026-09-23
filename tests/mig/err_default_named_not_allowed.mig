@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_column :t, :role, :integer, default: :now
+  }
+}

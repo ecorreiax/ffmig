@@ -1,0 +1,3 @@
+migration M
+  change
+    create_table t id=bigint

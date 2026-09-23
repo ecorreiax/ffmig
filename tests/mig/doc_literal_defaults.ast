@@ -1,0 +1,16 @@
+migration M
+  change
+    create_table t id=bigint
+      column s string null default="guest"
+      column t text null default="a\"b\\c"
+      column i integer null default=-5
+      column b bigint null default=9223372036854775807
+      column f float null default=1
+      column d decimal null default=0
+      column active boolean null default=false
+      column day date null default="2026-01-01"
+      column at datetime null default="2026-01-01 12:00:00"
+      column tm time null default="12:00:00"
+      column u uuid null default="00000000-0000-0000-0000-000000000000"
+      column settings json null default="{}"
+      column blob binary null default=nil

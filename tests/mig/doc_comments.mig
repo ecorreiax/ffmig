@@ -1,0 +1,7 @@
+# leading comment
+migration Commented { # after name
+  change {
+    add_column :t, :c, :string, default: "# not a comment" # trailing
+  }
+}
+# after

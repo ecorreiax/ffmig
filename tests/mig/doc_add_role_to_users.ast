@@ -1,0 +1,4 @@
+migration AddRoleToUsers
+  change
+    add_column users
+      column role integer not_null default=0

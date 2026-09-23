@@ -1,0 +1,1 @@
+3:16: add_column expects :table to be a symbol, found a string

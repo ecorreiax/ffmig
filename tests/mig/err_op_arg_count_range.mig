@@ -1,0 +1,5 @@
+migration M {
+  change {
+    remove_index :t, :a, :b
+  }
+}

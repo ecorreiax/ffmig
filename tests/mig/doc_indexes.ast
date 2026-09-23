@@ -1,0 +1,6 @@
+migration M
+  change
+    add_index users email unique
+    add_index users email name="users_email_key"
+    remove_index users email unique
+    remove_index users name="users_email_key"

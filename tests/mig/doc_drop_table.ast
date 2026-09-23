@@ -1,0 +1,6 @@
+migration DropUsers
+  up
+    drop_table users id=bigint no_columns
+  down
+    create_table users id=bigint
+      column email string null

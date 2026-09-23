@@ -1,0 +1,8 @@
+migration M
+  change
+    create_table t id=bigint
+      column code string null limit=10
+      column price decimal null precision=8
+      column total decimal null precision=10 scale=2
+      column role integer not_null
+      column bio text null default=nil
