@@ -35,11 +35,77 @@ pub fn write(dialect: Dialect, ops: []const ast.Operation, w: *Writer) Writer.Er
     }
 }
 
+/// Table that records which migrations have run, one row per version.
+pub const tracking_table = "schema_migrations";
+
+/// A statement that reads or writes the tracking table.
+pub const Tracking = union(enum) {
+    /// Creates the table if it does not exist.
+    create,
+    /// Selects every recorded version, one per row, in order.
+    select,
+    insert: []const u8,
+    delete: []const u8,
+};
+
+/// Writes one tracking statement, without a trailing `;`.
+pub fn writeTracking(dialect: Dialect, t: Tracking, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try tracking(postgres, t, w),
+    }
+}
+
+fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
+    switch (t) {
+        .create => {
+            try w.writeAll("CREATE TABLE IF NOT EXISTS ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" (");
+            try D.identifier(w, "version");
+            try w.writeByte(' ');
+            try D.columnType(w, .{ .name = "version", .type = .string, .span = .{ .start = 0, .end = 0 } });
+            try w.writeAll(" PRIMARY KEY)");
+        },
+        .select => {
+            try w.writeAll("SELECT ");
+            try D.identifier(w, "version");
+            try w.writeAll(" FROM ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" ORDER BY ");
+            try D.identifier(w, "version");
+        },
+        .insert => |v| {
+            try w.writeAll("INSERT INTO ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" (");
+            try D.identifier(w, "version");
+            try w.writeAll(") VALUES (");
+            try D.literal(w, .{ .string = v });
+            try w.writeByte(')');
+        },
+        .delete => |v| {
+            try w.writeAll("DELETE FROM ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" WHERE ");
+            try D.identifier(w, "version");
+            try w.writeAll(" = ");
+            try D.literal(w, .{ .string = v });
+        },
+    }
+}
+
 /// `D` is a dialect file; see `postgres.zig` for the functions it provides.
 fn writeAll(comptime D: type, ops: []const ast.Operation, w: *Writer) Writer.Error!void {
     for (ops) |op| {
         try statement(D, op.kind, w);
         try w.writeAll(";\n");
+    }
+}
+
+/// Writes one operation as a single statement, without a trailing `;`.
+pub fn writeStatement(dialect: Dialect, op: ast.Operation, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try statement(postgres, op.kind, w),
     }
 }
 

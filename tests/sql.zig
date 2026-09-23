@@ -76,6 +76,20 @@ test "capabilities" {
 /// Golden cases: each `<case>.mig` has a `<case>.<dialect>.sql` per
 /// dialect with the SQL for its `up` plan, then for its `down` plan (or
 /// the reason it has none). Read at test time from the project root.
+fn expectTracking(t: sql.Tracking, expected: []const u8) !void {
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try sql.writeTracking(.postgres, t, &out.writer);
+    try testing.expectEqualStrings(expected, out.written());
+}
+
+test "postgres tracking table statements" {
+    try expectTracking(.create, "CREATE TABLE IF NOT EXISTS \"schema_migrations\" (\"version\" varchar PRIMARY KEY)");
+    try expectTracking(.select, "SELECT \"version\" FROM \"schema_migrations\" ORDER BY \"version\"");
+    try expectTracking(.{ .insert = "20260923140512" }, "INSERT INTO \"schema_migrations\" (\"version\") VALUES ('20260923140512')");
+    try expectTracking(.{ .delete = "it's" }, "DELETE FROM \"schema_migrations\" WHERE \"version\" = 'it''s'");
+}
+
 const golden_dir = "tests/sql";
 
 test "golden cases in tests/sql" {

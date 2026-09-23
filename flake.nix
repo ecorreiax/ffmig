@@ -20,7 +20,8 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [ ./build.zig ./build.zig.zon ./src ];
           };
-          nativeBuildInputs = [ zig.hook ];
+          nativeBuildInputs = [ zig.hook pkgs.pkg-config ];
+          buildInputs = [ pkgs.libpq ];
         };
 
         apps.default = flake-utils.lib.mkApp {
@@ -28,7 +29,8 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ zig pkgs.zls ];
+          # libpq is linked by ffmig.
+          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq ];
         };
       });
 }

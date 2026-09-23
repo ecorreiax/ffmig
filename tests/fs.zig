@@ -71,3 +71,10 @@ test "name validation" {
         try testing.expect(!isValidName(name));
     }
 }
+
+test "migration version is the timestamp prefix" {
+    try testing.expectEqualStrings("20260923140512", fs.migrationVersion("20260923140512_create_users.mig").?);
+    inline for (.{ "create_users.mig", "20260923140512.mig", "20260923140512_.mig", "2026092314051x_a.mig", "20260923140512-a.mig", "20260923140512_a.sql" }) |name| {
+        try testing.expectEqual(null, fs.migrationVersion(name));
+    }
+}

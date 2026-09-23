@@ -18,6 +18,10 @@ pub const usage =
     \\                   --down        Print it as up / down, deriving down for change
     \\  sql <file>     Print the PostgreSQL for a migration's up plan
     \\                   --down        Print the down plan instead
+    \\  migrate        Apply every pending migration
+    \\  rollback       Undo the last applied migration
+    \\                   --step <n>    Undo the last n instead
+    \\  status         List migrations as up or down
     \\  help           Show this message
     \\
 ;

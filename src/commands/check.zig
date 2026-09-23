@@ -67,7 +67,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
     var arena_state: std.heap.ArenaAllocator = .init(env.gpa);
     defer arena_state.deinit();
-    const names = listMigrations(env.io, dir, arena_state.allocator()) catch |e| switch (e) {
+    const names = fs.listMigrations(env.io, dir, arena_state.allocator()) catch |e| switch (e) {
         error.OutOfMemory => return outOfMemory(err),
         else => {
             try err.print("ffmig: cannot read directory {s}: {t}\n", .{ cfg.path, e });
@@ -75,22 +75,6 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
         },
     };
     return checkFiles(env, dir, cfg.path, names, opts, out, err);
-}
-
-/// Names of the `*.mig` files in `dir`, sorted.
-fn listMigrations(io: Io, dir: Io.Dir, arena: Allocator) ![]const []const u8 {
-    var names: std.ArrayList([]const u8) = .empty;
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, fs.migration_extension)) continue;
-        try names.append(arena, try arena.dupe(u8, entry.name));
-    }
-    std.mem.sortUnstable([]const u8, names.items, {}, lessThan);
-    return names.items;
-}
-
-fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.lessThan(u8, a, b);
 }
 
 /// Checks `paths` relative to `dir`, reporting them prefixed with `prefix/`

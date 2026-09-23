@@ -123,3 +123,33 @@ fn isBlankOrComment(s: []const u8) bool {
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
+
+pub const ExpandError = error{ UndefinedVariable, InvalidSyntax, OutOfMemory };
+
+/// Replaces each `${NAME}` in `s` with the variable's value from `environ`.
+/// On `error.UndefinedVariable`, `missing` holds the variable name, a
+/// slice of `s`. A `$` not followed by `{` is kept as is.
+pub fn expandEnv(
+    gpa: Allocator,
+    s: []const u8,
+    environ: *const std.process.Environ.Map,
+    missing: *[]const u8,
+) ExpandError![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    var rest = s;
+    while (std.mem.indexOf(u8, rest, "${")) |i| {
+        try buf.appendSlice(gpa, rest[0..i]);
+        const end = std.mem.indexOfScalarPos(u8, rest, i + 2, '}') orelse return error.InvalidSyntax;
+        const name = rest[i + 2 .. end];
+        if (name.len == 0) return error.InvalidSyntax;
+        const value = environ.get(name) orelse {
+            missing.* = name;
+            return error.UndefinedVariable;
+        };
+        try buf.appendSlice(gpa, value);
+        rest = rest[end + 1 ..];
+    }
+    try buf.appendSlice(gpa, rest);
+    return buf.toOwnedSlice(gpa);
+}

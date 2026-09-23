@@ -1,5 +1,5 @@
-//! Helpers for naming files that ffmig creates: migration names,
-//! timestamps and `<timestamp>_<name>.mig` file names.
+//! Helpers for the files ffmig creates: migration names, timestamps,
+//! `<timestamp>_<name>.mig` file names and listing them.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -8,6 +8,22 @@ const Writer = Io.Writer;
 
 pub const timestamp_len = "YYYYMMDDHHMMSS".len;
 pub const migration_extension = ".mig";
+
+/// Names of the `*.mig` files in `dir`, sorted.
+pub fn listMigrations(io: Io, dir: Io.Dir, arena: Allocator) ![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, migration_extension)) continue;
+        try names.append(arena, try arena.dupe(u8, entry.name));
+    }
+    std.mem.sortUnstable([]const u8, names.items, {}, lessThan);
+    return names.items;
+}
+
+fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
 
 /// Current wall-clock time in seconds since the Unix epoch.
 pub fn now(io: Io) u64 {
@@ -35,6 +51,16 @@ pub fn migrationFileName(gpa: Allocator, epoch_secs: u64, name: []const u8) Allo
     writeSnakeCase(w, name) catch return error.OutOfMemory;
     w.writeAll(migration_extension) catch return error.OutOfMemory;
     return buf.toOwnedSlice();
+}
+
+/// The `YYYYMMDDHHMMSS` version at the start of a migration file name, or
+/// null if `file_name` is not `<timestamp>_<name>.mig`.
+pub fn migrationVersion(file_name: []const u8) ?[]const u8 {
+    if (file_name.len <= timestamp_len + 1 + migration_extension.len) return null;
+    if (!std.mem.endsWith(u8, file_name, migration_extension) or file_name[timestamp_len] != '_') return null;
+    const version = file_name[0..timestamp_len];
+    for (version) |c| if (!std.ascii.isDigit(c)) return null;
+    return version;
 }
 
 /// The snake_case name inside a file name built by `migrationFileName`.

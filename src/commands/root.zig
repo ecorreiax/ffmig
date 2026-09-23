@@ -10,6 +10,10 @@ pub const init = @import("init.zig");
 pub const new = @import("new.zig");
 pub const check = @import("check.zig");
 pub const sql = @import("sql.zig");
+pub const migrate = @import("migrate.zig");
+pub const rollback = @import("rollback.zig");
+pub const status = @import("status.zig");
+pub const migrations = @import("migrations.zig");
 
 /// Process resources a command may need, injected so tests can point
 /// commands at a temporary directory.
@@ -17,6 +21,9 @@ pub const Env = struct {
     io: Io,
     cwd: Io.Dir,
     gpa: Allocator,
+    /// Environment variables, for `${VAR}` in the database URL. Null
+    /// behaves like an empty environment.
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 pub const Command = enum {
@@ -24,6 +31,9 @@ pub const Command = enum {
     new,
     check,
     sql,
+    migrate,
+    rollback,
+    status,
     help,
 };
 
@@ -35,6 +45,9 @@ pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, e
         .new => new.run(env, args, out, err),
         .check => check.run(env, args, out, err),
         .sql => sql.run(env, args, out, err),
+        .migrate => migrate.run(env, args, out, err),
+        .rollback => rollback.run(env, args, out, err),
+        .status => status.run(env, args, out, err),
         .help => unreachable,
     };
 }

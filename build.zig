@@ -9,6 +9,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // The PostgreSQL driver (`src/db/postgres.zig`); found through
+    // pkg-config, which the nix dev shell sets up.
+    mod.linkSystemLibrary("pq", .{});
 
     const exe = b.addExecutable(.{
         .name = "ffmig",
