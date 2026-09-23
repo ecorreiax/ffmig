@@ -12,6 +12,7 @@ const usage =
     \\  init           Create ffmig.toml and the migrations directory
     \\                   --path <dir>  Migrations directory (default: migrations)
     \\                   --url <url>   Database URL (default: ${DATABASE_URL})
+    \\  new <name>     Create a timestamped migration file, e.g. new create_users
     \\  help           Show this message
     \\
 ;
@@ -45,7 +46,7 @@ fn expectRun(args: []const []const u8, code: u8, stdout: []const u8, stderr: []c
     var err: Writer.Allocating = .init(testing.allocator);
     defer err.deinit();
 
-    try testing.expectEqual(code, try run(.{ .io = testing.io, .cwd = std.Io.Dir.cwd() }, args, &out.writer, &err.writer));
+    try testing.expectEqual(code, try run(.{ .io = testing.io, .cwd = std.Io.Dir.cwd(), .gpa = testing.allocator }, args, &out.writer, &err.writer));
     try testing.expectEqualStrings(stdout, out.written());
     try testing.expectEqualStrings(stderr, err.written());
 }
@@ -59,7 +60,7 @@ test "dispatches to init" {
     var err: Writer.Allocating = .init(testing.allocator);
     defer err.deinit();
 
-    const env: commands.Env = .{ .io = testing.io, .cwd = tmp.dir };
+    const env: commands.Env = .{ .io = testing.io, .cwd = tmp.dir, .gpa = testing.allocator };
     try testing.expectEqual(0, try run(env, &.{"init"}, &out.writer, &err.writer));
     try testing.expectEqualStrings("Created ffmig.toml\nCreated migrations/\n", out.written());
     try testing.expectEqualStrings("", err.written());

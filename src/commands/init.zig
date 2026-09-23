@@ -7,11 +7,12 @@ const std = @import("std");
 const Io = std.Io;
 const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
+const config = @import("../utils/config.zig");
 
 pub const usage = "Usage: ffmig init [--path <dir>] [--url <url>]\n";
 
-pub const config_file = "ffmig.toml";
-pub const default_path = "migrations";
+const config_file = config.file_name;
+const default_path = config.default_path;
 pub const default_url = "${DATABASE_URL}";
 
 const Options = struct {
@@ -26,15 +27,15 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     };
 
     var buffer: [4096]u8 = undefined;
-    var config: Writer = .fixed(&buffer);
-    renderConfig(&config, opts) catch {
+    var rendered: Writer = .fixed(&buffer);
+    renderConfig(&rendered, opts) catch {
         try err.writeAll("ffmig: --path or --url is too long\n");
         return 1;
     };
 
     env.cwd.writeFile(env.io, .{
         .sub_path = config_file,
-        .data = config.buffered(),
+        .data = rendered.buffered(),
         .flags = .{ .exclusive = true },
     }) catch |e| switch (e) {
         error.PathAlreadyExists => {
@@ -127,7 +128,7 @@ fn runIn(dir: Io.Dir, args: []const []const u8) !Result {
         .out = .init(testing.allocator),
         .err = .init(testing.allocator),
     };
-    r.code = try run(.{ .io = testing.io, .cwd = dir }, args, &r.out.writer, &r.err.writer);
+    r.code = try run(.{ .io = testing.io, .cwd = dir, .gpa = testing.allocator }, args, &r.out.writer, &r.err.writer);
     return r;
 }
 
