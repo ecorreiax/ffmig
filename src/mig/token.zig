@@ -57,15 +57,3 @@ pub fn lineCol(source: []const u8, offset: u32) LineCol {
         .col = @intCast(before.len - line_start + 1),
     };
 }
-
-const testing = std.testing;
-
-test lineCol {
-    const source = "ab\ncd\n\nx";
-    try testing.expectEqual(LineCol{ .line = 1, .col = 1 }, lineCol(source, 0));
-    try testing.expectEqual(LineCol{ .line = 1, .col = 3 }, lineCol(source, 2));
-    try testing.expectEqual(LineCol{ .line = 2, .col = 1 }, lineCol(source, 3));
-    try testing.expectEqual(LineCol{ .line = 2, .col = 2 }, lineCol(source, 4));
-    try testing.expectEqual(LineCol{ .line = 4, .col = 1 }, lineCol(source, 7));
-    try testing.expectEqual(LineCol{ .line = 4, .col = 2 }, lineCol(source, 8));
-}

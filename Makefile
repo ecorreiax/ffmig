@@ -19,7 +19,7 @@ test:
 	$(ZIG) build test --summary all
 
 fmt:
-	$(ZIG) fmt build.zig src
+	$(ZIG) fmt build.zig src tests
 
 clean:
 	rm -rf ffmig zig-out .zig-cache

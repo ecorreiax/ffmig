@@ -35,7 +35,3 @@ pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, e
         .help => unreachable,
     };
 }
-
-test {
-    std.testing.refAllDecls(@This());
-}

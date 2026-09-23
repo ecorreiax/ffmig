@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const cli = @import("cli.zig");
+const cli = @import("ffmig").cli;
 
 pub fn main(init: std.process.Init) !u8 {
     const arena = init.arena.allocator();
@@ -21,11 +21,4 @@ pub fn main(init: std.process.Init) !u8 {
     try stdout_writer.interface.flush();
     try stderr_writer.interface.flush();
     return status;
-}
-
-test {
-    _ = cli;
-    _ = @import("utils/config.zig");
-    _ = @import("utils/fs.zig");
-    _ = @import("mig/root.zig");
 }
