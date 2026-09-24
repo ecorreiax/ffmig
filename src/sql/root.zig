@@ -249,10 +249,16 @@ fn writeAll(comptime D: type, ops: []const ast.Operation, w: *Writer) Writer.Err
     var it: Statements = .{ .ops = ops };
     while (it.next()) |op| {
         try statement(D, op.kind, w);
-        // A `--` comment on the last line would swallow the `;`.
-        if (op.kind == .execute and endsInComment(withoutTerminator(op.kind.execute.sql))) try w.writeByte('\n');
+        if (semicolonOnOwnLine(op)) try w.writeByte('\n');
         try w.writeAll(";\n");
     }
+}
+
+/// Whether a script must put the `;` after `op`'s statement on a line of
+/// its own: a `--` comment on the last line of an `execute` would swallow
+/// it.
+pub fn semicolonOnOwnLine(op: ast.Operation) bool {
+    return op.kind == .execute and endsInComment(withoutTerminator(op.kind.execute.sql));
 }
 
 /// The operations that `ops` run as, one statement each: every operation,

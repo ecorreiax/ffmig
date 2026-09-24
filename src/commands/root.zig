@@ -13,6 +13,7 @@ pub const check = @import("check.zig");
 pub const sql = @import("sql.zig");
 pub const migrate = @import("migrate.zig");
 pub const rollback = @import("rollback.zig");
+pub const redo = @import("redo.zig");
 pub const status = @import("status.zig");
 pub const create = @import("create.zig");
 pub const drop = @import("drop.zig");
@@ -54,6 +55,7 @@ pub const Command = enum {
     sql,
     migrate,
     rollback,
+    redo,
     status,
     help,
     version,
@@ -68,7 +70,7 @@ pub const Globals = struct {
 
     pub fn of(command: Command) Globals {
         return switch (command) {
-            .init, .create, .drop, .protect, .unprotect, .migrate, .rollback, .status => .{ .config = true, .url = true },
+            .init, .create, .drop, .protect, .unprotect, .migrate, .rollback, .redo, .status => .{ .config = true, .url = true },
             .new, .check => .{ .config = true },
             .sql, .help, .version => .{},
         };
@@ -103,6 +105,7 @@ pub fn usage(command: Command) []const u8 {
         .sql => sql.usage,
         .migrate => migrate.usage,
         .rollback => rollback.usage,
+        .redo => redo.usage,
         .status => status.usage,
         .help => help_usage,
         .version => version_usage,
@@ -124,6 +127,7 @@ pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, e
         .sql => sql.run(env, args, out, err),
         .migrate => migrate.run(env, args, out, err),
         .rollback => rollback.run(env, args, out, err),
+        .redo => redo.run(env, args, out, err),
         .status => status.run(env, args, out, err),
         .help, .version => unreachable,
     };

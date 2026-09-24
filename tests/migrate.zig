@@ -93,6 +93,7 @@ const Result = struct {
 const Command = union(enum) {
     migrate: commands.migrate.Options,
     rollback: commands.rollback.Options,
+    redo: commands.redo.Options,
     status,
 };
 
@@ -113,6 +114,7 @@ fn runIn(dir: Io.Dir, fake: *FakeDb, command: Command) !Result {
     r.code = switch (command) {
         .migrate => |o| try commands.migrate.migrate(env, arena, project, conn, o, out, err),
         .rollback => |o| try commands.rollback.rollback(env, arena, project, conn, o, out, err),
+        .redo => |o| try commands.redo.redo(env, arena, project, conn, o, out, err),
         .status => try commands.status.status(testing.io, arena, project, conn, out, err),
     };
     return r;
@@ -803,6 +805,13 @@ test "migrate and rollback accept their flags" {
         .{ commands.migrate, &[_][]const u8{ "--lock-wait", "0", "--strict" } },
         .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "2" } },
         .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait", "120" } },
+        .{ commands.migrate, &[_][]const u8{ "--to", "20260101000000", "--dry-run" } },
+        .{ commands.migrate, &[_][]const u8{ "--fake", "--to=20260101000000" } },
+        .{ commands.migrate, &[_][]const u8{ "--dry-run", "--fake", "--strict" } },
+        .{ commands.rollback, &[_][]const u8{ "--to", "20260101000000", "--dry-run" } },
+        .{ commands.rollback, &[_][]const u8{ "--dry-run", "--step", "3" } },
+        .{ commands.redo, &[_][]const u8{} },
+        .{ commands.redo, &[_][]const u8{ "--step", "2", "--lock-wait", "0" } },
     };
     inline for (cases) |c| {
         var out: Writer.Allocating = .init(testing.allocator);
@@ -834,6 +843,19 @@ test "rollback and migrate reject extra arguments" {
         .{ commands.rollback, &[_][]const u8{"--strict"} },
         .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait" } },
         .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "0" } },
+        .{ commands.migrate, &[_][]const u8{"--to"} },
+        .{ commands.migrate, &[_][]const u8{"--to="} },
+        .{ commands.migrate, &[_][]const u8{"--dry-run=true"} },
+        .{ commands.migrate, &[_][]const u8{ "--fake", "x" } },
+        .{ commands.migrate, &[_][]const u8{ "--step", "1" } },
+        .{ commands.rollback, &[_][]const u8{ "--step", "2", "--to", "20260101000000" } },
+        .{ commands.rollback, &[_][]const u8{ "--to", "20260101000000", "--step", "1" } },
+        .{ commands.rollback, &[_][]const u8{"--fake"} },
+        .{ commands.rollback, &[_][]const u8{"--to"} },
+        .{ commands.redo, &[_][]const u8{ "--step", "0" } },
+        .{ commands.redo, &[_][]const u8{ "--to", "20260101000000" } },
+        .{ commands.redo, &[_][]const u8{"--dry-run"} },
+        .{ commands.redo, &[_][]const u8{"1"} },
     };
     inline for (cases) |c| {
         var out: Writer.Allocating = .init(testing.allocator);
@@ -843,4 +865,311 @@ test "rollback and migrate reject extra arguments" {
         try testing.expectEqual(1, try c[0].run(env, c[1], &out.writer, &err.writer));
         try testing.expectEqualStrings(c[0].usage, err.written());
     }
+}
+
+test "migrate --dry-run prints what would run and runs nothing" {
+    const backfill = [2][]const u8{
+        "20260105000000_backfill.mig",
+        \\migration Backfill {
+        \\  up {
+        \\    execute "UPDATE users SET role = 0 -- everyone"
+        \\  }
+        \\  down {
+        \\    execute "SELECT 1"
+        \\  }
+        \\}
+        \\
+    };
+    var tmp = try setup(&.{ create_users, add_role, add_slug, backfill });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .dry_run = true } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    const expected = try std.mem.concat(testing.allocator, u8, &.{
+        \\-- db/20260102000000_add_role.mig
+        \\BEGIN;
+        \\ALTER TABLE "users" ADD COLUMN "role" integer;
+        \\CREATE INDEX "index_users_on_role" ON "users" ("role");
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260102000000', '
+        ++ add_role_sum ++
+            \\');
+            \\COMMIT;
+            \\
+            \\-- db/20260104000000_add_slug.mig
+            \\ALTER TABLE "users" ADD COLUMN "slug" varchar;
+            \\CREATE UNIQUE INDEX "index_users_on_slug" ON "users" ("slug");
+            \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260104000000', '
+        ++ add_slug_sum ++
+            \\');
+            \\
+            \\-- db/20260105000000_backfill.mig
+            \\BEGIN;
+            \\UPDATE users SET role = 0 -- everyone
+            \\;
+            \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260105000000', '
+        ,
+        &migrations.checksum(backfill[1]),
+        \\');
+        \\COMMIT;
+        \\
+    });
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, r.out.written());
+    // No lock, no timeouts, nothing run: only the tracking table is read.
+    try testing.expectEqualStrings(tracking_create, fake.log.written());
+
+    var none: FakeDb = .init(&.{ "20260101000000", "20260102000000", "20260104000000", "20260105000000" });
+    defer none.deinit();
+    var rn = try runIn(tmp.dir, &none, .{ .migrate = .{ .dry_run = true } });
+    defer rn.deinit();
+    try testing.expectEqual(0, rn.code);
+    try testing.expectEqualStrings("-- Nothing to migrate\n", rn.out.written());
+}
+
+test "migrate --to stops after that version" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .to = "20260102000000" } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , r.out.written());
+    try testing.expect(std.mem.indexOf(u8, fake.log.written(), "DROP TABLE") == null);
+
+    // Already applied: nothing left up to it.
+    var done: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer done.deinit();
+    var rd = try runIn(tmp.dir, &done, .{ .migrate = .{ .to = "20260101000000" } });
+    defer rd.deinit();
+    try testing.expectEqual(0, rd.code);
+    try testing.expectEqualStrings("Nothing to migrate\n", rd.out.written());
+}
+
+test "migrate --to needs the version of a file, and checks it before connecting" {
+    var tmp = try setup(&.{ create_users, add_role });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .to = "20260101" } });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings("", r.out.written());
+    try testing.expectEqualStrings(
+        \\ffmig: no migration in db has version 20260101
+        \\ffmig: nothing was migrated
+        \\
+    , r.err.written());
+    try testing.expectEqualStrings("", fake.log.written());
+}
+
+test "migrate --fake records pending versions without running them" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .fake = true, .to = "20260102000000" } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\Recorded (not run) db/20260101000000_create_users.mig
+        \\Recorded (not run) db/20260102000000_add_role.mig
+        \\
+    , r.out.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260101000000', '
+    ++ create_users_sum ++
+        \\');
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260102000000', '
+    ++ add_role_sum ++
+        \\');
+        \\
+    ++ unlock, fake.log.written());
+
+    // With --dry-run, it prints the inserts alone.
+    var dry: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer dry.deinit();
+    var rd = try runIn(tmp.dir, &dry, .{ .migrate = .{ .fake = true, .dry_run = true } });
+    defer rd.deinit();
+    try testing.expectEqual(0, rd.code);
+    try testing.expectEqualStrings(
+        \\-- db/20260103000000_drop_legacy.mig
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260103000000', '
+    ++ drop_legacy_sum ++
+        \\');
+        \\
+    , rd.out.written());
+}
+
+test "migrate --fake records nothing while a pending file is broken" {
+    const broken = [2][]const u8{ "20260104000000_broken.mig", "migration Broken { change { add_idx :t, :c } }\n" };
+    var tmp = try setup(&.{ create_users, broken });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .fake = true } });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings("", r.out.written());
+    try testing.expect(std.mem.endsWith(u8, r.err.written(), "ffmig: nothing was migrated\n"));
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
+}
+
+test "rollback --to undoes every migration newer than that version" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{ "20260101000000", "20260102000000", "20260103000000" });
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .to = "20260101000000" } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\Rolled back db/20260103000000_drop_legacy.mig
+        \\Rolled back db/20260102000000_add_role.mig
+        \\
+    , r.out.written());
+    try testing.expect(std.mem.indexOf(u8, fake.log.written(), "'20260101000000'") == null);
+
+    // The newest version: nothing is newer.
+    var newest: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer newest.deinit();
+    var rn = try runIn(tmp.dir, &newest, .{ .rollback = .{ .to = "20260102000000" } });
+    defer rn.deinit();
+    try testing.expectEqual(0, rn.code);
+    try testing.expectEqualStrings("Nothing to roll back\n", rn.out.written());
+
+    // A version that is not applied, even with a file.
+    var pending: FakeDb = .init(&.{"20260101000000"});
+    defer pending.deinit();
+    var rp = try runIn(tmp.dir, &pending, .{ .rollback = .{ .to = "20260103000000" } });
+    defer rp.deinit();
+    try testing.expectEqual(1, rp.code);
+    try testing.expectEqualStrings(
+        \\ffmig: 20260103000000 is not an applied migration
+        \\ffmig: nothing was rolled back
+        \\
+    , rp.err.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, pending.log.written());
+}
+
+test "rollback --dry-run prints the down plans and runs nothing" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{ "20260101000000", "20260102000000", "20260103000000" });
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .step = 2, .dry_run = true } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\-- db/20260103000000_drop_legacy.mig
+        \\BEGIN;
+        \\CREATE TABLE "legacy" (
+        \\  "data" text
+        \\);
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260103000000';
+        \\COMMIT;
+        \\
+        \\-- db/20260102000000_add_role.mig
+        \\BEGIN;
+        \\DROP INDEX "index_users_on_role";
+        \\ALTER TABLE "users" DROP COLUMN "role";
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260102000000';
+        \\COMMIT;
+        \\
+    , r.out.written());
+    try testing.expectEqualStrings(tracking_create, fake.log.written());
+
+    var none: FakeDb = .init(&.{});
+    defer none.deinit();
+    var rn = try runIn(tmp.dir, &none, .{ .rollback = .{ .dry_run = true } });
+    defer rn.deinit();
+    try testing.expectEqualStrings("-- Nothing to roll back\n", rn.out.written());
+}
+
+test "redo rolls back and migrates again under one lock" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    // drop_legacy is pending and stays so.
+    var fake: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .redo = .{ .step = 2 } });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\Rolled back db/20260102000000_add_role.mig
+        \\Rolled back db/20260101000000_create_users.mig
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , r.out.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\BEGIN;
+        \\DROP INDEX "index_users_on_role";
+        \\ALTER TABLE "users" DROP COLUMN "role";
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260102000000';
+        \\COMMIT;
+        \\BEGIN;
+        \\DROP TABLE "users";
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260101000000';
+        \\COMMIT;
+        \\BEGIN;
+        \\CREATE TABLE "users" (
+        \\  "id" bigserial PRIMARY KEY,
+        \\  "email" varchar NOT NULL
+        \\);
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260101000000', '
+    ++ create_users_sum ++
+        \\');
+        \\COMMIT;
+        \\BEGIN;
+        \\ALTER TABLE "users" ADD COLUMN "role" integer;
+        \\CREATE INDEX "index_users_on_role" ON "users" ("role");
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260102000000', '
+    ++ add_role_sum ++
+        \\');
+        \\COMMIT;
+        \\
+    ++ unlock, fake.log.written());
+}
+
+test "redo checks every file before running anything" {
+    const drop_users = [2][]const u8{ "20260104000000_drop_users.mig", "migration DropUsers { change { drop_table :users } }\n" };
+    var tmp = try setup(&.{ create_users, drop_users });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{ "20260101000000", "20260104000000" });
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .redo = .{} });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings("", r.out.written());
+    try testing.expect(std.mem.endsWith(u8, r.err.written(), "ffmig: nothing was redone\n"));
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
+
+    var empty: FakeDb = .init(&.{});
+    defer empty.deinit();
+    var re = try runIn(tmp.dir, &empty, .{ .redo = .{} });
+    defer re.deinit();
+    try testing.expectEqual(0, re.code);
+    try testing.expectEqualStrings("Nothing to redo\n", re.out.written());
 }

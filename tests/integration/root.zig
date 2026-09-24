@@ -884,3 +884,89 @@ test "rename_table fails when a renamed index name would be too long" {
         try f.expectVersions("20260101000000");
     }
 }
+
+test "--to both ways, dry runs, redo and --fake" {
+    const create_posts = [2][]const u8{
+        "20260103000000_create_posts.mig",
+        \\migration CreatePosts {
+        \\  change {
+        \\    create_table :posts {
+        \\      string :title
+        \\    }
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("targets", &.{ create_users, add_role, create_posts });
+    defer f.deinit();
+
+    try f.expectRun(&.{ "migrate", "--to", "20260102000000" }, 0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectVersions("20260101000000,20260102000000");
+    try f.expectRun(&.{ "migrate", "--to", "20260109000000" }, 1, "",
+        \\ffmig: no migration in db has version 20260109000000
+        \\ffmig: nothing was migrated
+        \\
+    );
+
+    // The dry run changes nothing, and what it prints does what migrate
+    // would have done.
+    var dry = try f.run(&.{ "migrate", "--dry-run" });
+    defer dry.deinit();
+    try testing.expectEqual(0, dry.code);
+    try testing.expect(std.mem.startsWith(u8, dry.out.written(), "-- db/20260103000000_create_posts.mig\nBEGIN;\nCREATE TABLE \"posts\""));
+    try f.expectColumns("posts", "");
+    try f.expectVersions("20260101000000,20260102000000");
+    try exec(f.conn, dry.out.written());
+    try f.expectColumns("posts", "id,title");
+    try f.expectRun(&.{"status"}, 0,
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260103000000_create_posts.mig
+        \\
+    , "");
+
+    var dry_down = try f.run(&.{ "rollback", "--to", "20260101000000", "--dry-run" });
+    defer dry_down.deinit();
+    try testing.expectEqual(0, dry_down.code);
+    try testing.expect(std.mem.indexOf(u8, dry_down.out.written(), "DROP TABLE \"posts\"") != null);
+    try f.expectVersions("20260101000000,20260102000000,20260103000000");
+
+    try f.expectRun(&.{ "rollback", "--to", "20260101000000" }, 0,
+        \\Rolled back db/20260103000000_create_posts.mig
+        \\Rolled back db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectVersions("20260101000000");
+    try f.expectColumns("users", "id,email");
+    try f.expectColumns("posts", "");
+
+    try exec(f.conn, "INSERT INTO users (email) VALUES ('a@example.com')");
+    try f.expectRun(&.{"redo"}, 0,
+        \\Rolled back db/20260101000000_create_users.mig
+        \\Migrated db/20260101000000_create_users.mig
+        \\
+    , "");
+    // Dropped and created again.
+    try f.expectQuery("SELECT count(*) FROM users", "0");
+    try f.expectVersions("20260101000000");
+
+    // Adopting a database whose schema is already there.
+    try exec(f.conn, "DROP TABLE schema_migrations");
+    try f.expectRun(&.{ "migrate", "--fake", "--to", "20260101000000" }, 0, "Recorded (not run) db/20260101000000_create_users.mig\n", "");
+    try f.expectRun(&.{"status"}, 0,
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\down                           db/20260102000000_add_role.mig
+        \\down                           db/20260103000000_create_posts.mig
+        \\
+    , "");
+    try f.expectRun(&.{ "migrate", "--strict" }, 0,
+        \\Migrated db/20260102000000_add_role.mig
+        \\Migrated db/20260103000000_create_posts.mig
+        \\
+    , "");
+    try f.expectColumns("users", "id,email,role");
+}

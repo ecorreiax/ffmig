@@ -119,6 +119,22 @@ A `schema_migrations` table made by an earlier ffmig gains the checksum and time
 
 `migrate` and `rollback` hold a lock on the database while they run, so several deploys starting at once apply each migration exactly once: the others wait, then find nothing left to do. A run gives up after 60 seconds of waiting; `--lock-wait <seconds>` changes that, and `--lock-wait 0` does not wait at all. `status` never waits.
 
+### Previewing and moving between versions
+
+`ffmig migrate --dry-run` prints the SQL that `migrate` would send, one `-- <file>` section per pending migration with its `BEGIN`, `COMMIT` and `schema_migrations` insert, and runs none of it, so CI can show a deploy's SQL for review. `rollback --dry-run` does the same for a rollback. A dry run takes no lock and never waits.
+
+`migrate --to <version>` applies the pending migrations up to and including that version. `rollback --to <version>` undoes every applied migration newer than it; the one named stays applied. `ffmig redo` rolls back the last migration and applies it again, the usual loop while writing one (`--step <n>` for more); the lock is held across both halves.
+
+### Adopting an existing database
+
+To start using ffmig on a database that already has its schema, write a first migration that describes that schema, then record it as applied without running it:
+
+```sh
+ffmig migrate --fake --to 20260101000000
+```
+
+`--fake` still checks each file, and records its checksum like a real run. Without `--to`, it records every pending migration.
+
 ### Commands
 
 | Command          | Description                                                        |
@@ -131,8 +147,9 @@ A `schema_migrations` table made by an earlier ffmig gains the checksum and time
 | `new <name>`     | Create a timestamped migration file                                |
 | `check [files]`  | Check `.mig` files (`--ast`, `--down`)                             |
 | `sql <file>`     | Print the SQL for a migration (`--down` for rollback)              |
-| `migrate`        | Apply every pending migration (`--lock-wait <s>`, `--strict`)      |
-| `rollback`       | Undo the last migration (`--step <n>` for more, `--lock-wait <s>`) |
+| `migrate`        | Apply pending migrations (`--to`, `--dry-run`, `--fake`)           |
+| `rollback`       | Undo the last migration (`--step <n>` or `--to`, `--dry-run`)      |
+| `redo`           | Undo the last migration and apply it again (`--step <n>`)          |
 | `status`         | List migrations as up or down, and when each ran                   |
 | `help [command]` | Show usage, or one command's flags                                 |
 | `version`        | Print the version (also `--version`)                               |

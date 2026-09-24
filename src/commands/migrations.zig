@@ -198,6 +198,19 @@ pub const Parsed = struct {
     source: []const u8,
     checksum: Checksum,
     migration: mig.ast.Migration,
+
+    /// The operations that migrating runs.
+    pub fn up(p: Parsed) []const mig.ast.Operation {
+        return switch (p.migration.body) {
+            .change => |ops| ops,
+            .up_down => |b| b.up,
+        };
+    }
+
+    /// The tracking statement that records it as applied.
+    pub fn insert(p: *const Parsed) sql.Tracking {
+        return .{ .insert = .{ .version = p.file.version, .checksum = &p.checksum } };
+    }
 };
 
 /// A row of the tracking table.
@@ -431,6 +444,40 @@ fn lessThan(_: void, a: Applied, b: Applied) bool {
     return std.mem.lessThan(u8, a.version, b.version);
 }
 
+/// One statement of a migration as `apply` sends it, without its `;`.
+pub const Statement = struct {
+    text: []const u8,
+    /// Whether a script must put the `;` on a line of its own (see
+    /// `sql.semicolonOnOwnLine`).
+    own_line: bool = false,
+};
+
+/// What `apply` sends for a migration, without `BEGIN` and `COMMIT`: the
+/// statements of `ops` (see `sql.Statements`), then `tracking`. Both
+/// `apply` and `show` use it, so a dry run prints what a real run sends.
+pub fn statements(
+    arena: Allocator,
+    dialect: sql.Dialect,
+    ops: []const mig.ast.Operation,
+    tracking: sql.Tracking,
+) Allocator.Error![]const Statement {
+    var list: std.ArrayList(Statement) = .empty;
+    var it: sql.Statements = .{ .ops = ops };
+    while (it.next()) |op| {
+        var w: Writer.Allocating = .init(arena);
+        sql.writeStatement(dialect, op, &w.writer) catch return error.OutOfMemory;
+        try list.append(arena, .{ .text = w.written(), .own_line = sql.semicolonOnOwnLine(op) });
+    }
+    try list.append(arena, .{ .text = try trackingSql(arena, dialect, tracking) });
+    return list.items;
+}
+
+/// Whether `apply` runs a migration inside a transaction: when it asks
+/// for one (`transaction:`) and the dialect's DDL is transactional.
+fn transactional(dialect: sql.Dialect, transaction: bool) bool {
+    return transaction and sql.capabilities(dialect).transactional_ddl;
+}
+
 /// Runs `ops` and then the `tracking` statement, inside one transaction
 /// when `transaction` is set (the migration's `transaction:`) and the
 /// dialect's DDL is transactional. On failure, reports the statement and
@@ -446,32 +493,22 @@ pub fn apply(
     transaction: bool,
     err: *Writer,
 ) Writer.Error!bool {
-    const transactional = transaction and sql.capabilities(conn.dialect).transactional_ddl;
+    const list = statements(arena, conn.dialect, ops, tracking) catch {
+        try outOfMemory(err);
+        return false;
+    };
+    const in_transaction = transactional(conn.dialect, transaction);
     var diag: db.Diagnostic = .{};
-    if (transactional) conn.db.exec("BEGIN", &diag) catch |e| {
+    if (in_transaction) conn.db.exec("BEGIN", &diag) catch |e| {
         try dbError(e, err, path, diag);
         return false;
     };
 
-    var statement: Writer.Allocating = .init(arena);
-    var it: sql.Statements = .{ .ops = ops };
-    var done = false;
-    var ran: usize = 0;
-    while (!done) : (ran += 1) {
-        statement.clearRetainingCapacity();
-        const w = &statement.writer;
-        const written = if (it.next()) |op| sql.writeStatement(conn.dialect, op, w) else blk: {
-            done = true;
-            break :blk sql.writeTracking(conn.dialect, tracking, w);
-        };
-        written catch {
-            try outOfMemory(err);
-            return false;
-        };
-        conn.db.exec(statement.written(), &diag) catch |e| {
+    for (list, 0..) |statement, ran| {
+        conn.db.exec(statement.text, &diag) catch |e| {
             try dbError(e, err, path, diag);
-            try err.print("while running:\n{s};\n", .{statement.written()});
-            if (transactional) {
+            try err.print("while running:\n{s};\n", .{statement.text});
+            if (in_transaction) {
                 // Reported after the original error: without a working
                 // rollback, what the migration changed is unknown.
                 var rollback_diag: db.Diagnostic = .{};
@@ -483,10 +520,38 @@ pub fn apply(
         };
     }
 
-    if (transactional) conn.db.exec("COMMIT", &diag) catch |e| {
+    if (in_transaction) conn.db.exec("COMMIT", &diag) catch |e| {
         try dbError(e, err, path, diag);
         return false;
     };
+    return true;
+}
+
+/// Writes to `out` what `apply` would send for the same arguments, as a
+/// script under a `-- <path>` header, `BEGIN` and `COMMIT` included. Runs
+/// nothing. Reports running out of memory to `err` and returns false.
+pub fn show(
+    arena: Allocator,
+    dialect: sql.Dialect,
+    path: []const u8,
+    ops: []const mig.ast.Operation,
+    tracking: sql.Tracking,
+    transaction: bool,
+    out: *Writer,
+    err: *Writer,
+) Writer.Error!bool {
+    const list = statements(arena, dialect, ops, tracking) catch {
+        try outOfMemory(err);
+        return false;
+    };
+    const in_transaction = transactional(dialect, transaction);
+    try out.print("-- {s}\n", .{path});
+    if (in_transaction) try out.writeAll("BEGIN;\n");
+    for (list) |statement| {
+        try out.writeAll(statement.text);
+        try out.writeAll(if (statement.own_line) "\n;\n" else ";\n");
+    }
+    if (in_transaction) try out.writeAll("COMMIT;\n");
     return true;
 }
 

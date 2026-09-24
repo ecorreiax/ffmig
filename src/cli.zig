@@ -26,6 +26,7 @@ pub const usage =
     \\  sql <file>      Print the PostgreSQL for a migration
     \\  migrate         Apply every pending migration
     \\  rollback        Undo the last applied migration
+    \\  redo            Undo the last applied migration and apply it again
     \\  status          List migrations as up or down, with when each ran
     \\  help [command]  Show this message, or a command's flags
     \\  version         Print the version
