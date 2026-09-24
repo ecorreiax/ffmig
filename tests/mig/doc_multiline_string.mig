@@ -1,0 +1,12 @@
+migration RenameAda {
+  up {
+    execute """
+      UPDATE users
+      SET name = 'Ada "the first" Lovelace'
+      WHERE id = 1
+      """
+  }
+  down {
+    execute "UPDATE users SET name = 'Ada Lovelace' WHERE id = 1"
+  }
+}

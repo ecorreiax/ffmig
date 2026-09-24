@@ -116,6 +116,22 @@ test "every operation lowers" {
     try testing.expectEqualStrings("drop_table :a", ops[0].span.slice(source));
 }
 
+test "execute lowers in up and down" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    const source =
+        \\migration M {
+        \\  up { execute "CREATE VIEW v AS SELECT 1", dialect: :postgres }
+        \\  down { execute "DROP VIEW v" }
+        \\}
+    ;
+    const body = (try lowerSource(arena.allocator(), source, &diag)).body.up_down;
+    try testing.expectEqualDeep(ast.Execute{ .sql = "CREATE VIEW v AS SELECT 1", .dialect = .postgres }, body.up[0].kind.execute);
+    try testing.expectEqualDeep(ast.Execute{ .sql = "DROP VIEW v" }, body.down[0].kind.execute);
+    try testing.expectEqualStrings("execute \"DROP VIEW v\"", body.down[0].span.slice(source));
+}
+
 test "timestamps adds created_at and updated_at" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -349,6 +365,18 @@ test "semantic errors" {
         .{ "add_reference :t, :user, foreign_key: false, to: :people", "'to:' needs a foreign key", "to:" },
         .{ "add_reference :t, :user, foreign_key: false, on_delete: :cascade", "'on_delete:' needs a foreign key", "on_delete:" },
         .{ "remove_reference :t, :user, :bigint", "remove_reference expects 2 arguments (:table, :name), got 3", "remove_reference" },
+        // Raw SQL.
+        .{ "execute \"SELECT 1\"", "execute is not allowed in 'change'; write 'up' and 'down'", "execute" },
+        .{ "migration M { up { execute } down { } }", "execute expects 1 argument (\"sql\"), got 0", "execute" },
+        .{ "migration M { up { execute \"a\", \"b\" } down { } }", "execute expects 1 argument (\"sql\"), got 2", "execute" },
+        .{ "migration M { up { execute :users } down { } }", "execute expects \"sql\" to be a string, found a symbol", ":users" },
+        .{ "migration M { up { execute \"\" } down { } }", "execute has no SQL", "\"\"" },
+        .{ "migration M { up { execute \" ;\\n\" } down { } }", "execute has no SQL", "\" ;\\n\"" },
+        .{ "migration M { up { execute \"x\", dialect: :mysql } down { } }", "unknown dialect ':mysql'", ":mysql" },
+        .{ "migration M { up { execute \"x\", dialect: \"postgres\" } down { } }", "'dialect:' must be a symbol such as :postgres", "\"postgres\"" },
+        .{ "migration M { up { execute \"x\", on: :postgres } down { } }", "unknown option 'on' for execute", "on:" },
+        .{ "migration M { up { execute \"x\" { } } down { } }", "execute takes no block", "execute" },
+        .{ "migration M { up { create_table :t { execute \"x\" } } down { } }", "execute is not allowed inside a table block", "execute" },
     };
     inline for (cases) |c| {
         const source = comptime wrap(c[0]);

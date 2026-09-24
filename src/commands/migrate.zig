@@ -101,7 +101,7 @@ pub fn migrate(
     };
     var ok = true;
     for (files, parsed) |f, *p| {
-        if (try project.parse(env.io, arena, f, err)) |m| p.* = m else ok = false;
+        if (try project.parse(env.io, arena, f, conn.dialect, err)) |m| p.* = m else ok = false;
     }
     if (!ok) {
         try err.writeAll("ffmig: nothing was migrated\n");

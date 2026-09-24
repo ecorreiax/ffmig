@@ -24,7 +24,8 @@ pub fn lower(arena: Allocator, file: syntax.File, diag: *Diagnostic) Error!ast.M
 
 /// The operations a section may hold. `add_reference` and
 /// `remove_reference` lower to `add_column` and `remove_column`.
-const OpName = enum { create_table, drop_table, add_column, remove_column, rename_column, add_index, remove_index, add_reference, remove_reference };
+/// `execute` is only allowed in `up` and `down`.
+const OpName = enum { create_table, drop_table, add_column, remove_column, rename_column, add_index, remove_index, add_reference, remove_reference, execute };
 
 const migration_options = [_][]const u8{"transaction"};
 const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale" };
@@ -60,25 +61,30 @@ const Lowerer = struct {
             seen.set(s.kind, s);
         }
 
-        if (seen.get(.change)) |change| return .{ .change = try l.lowerOperations(change.calls) };
+        if (seen.get(.change)) |change| return .{ .change = try l.lowerOperations(change) };
         // The parser guarantees at least one section.
         const up = seen.get(.up) orelse return l.fail(seen.get(.down).?.kind_span, "missing 'up' block", .{});
         const down = seen.get(.down) orelse return l.fail(up.kind_span, "missing 'down' block", .{});
         return .{ .up_down = .{
-            .up = try l.lowerOperations(up.calls),
-            .down = try l.lowerOperations(down.calls),
+            .up = try l.lowerOperations(up),
+            .down = try l.lowerOperations(down),
         } };
     }
 
-    fn lowerOperations(l: *Lowerer, calls: []const syntax.Call) Error![]ast.Operation {
-        const ops = try l.arena.alloc(ast.Operation, calls.len);
-        for (calls, ops) |call, *op| op.* = try l.lowerOperation(call);
+    fn lowerOperations(l: *Lowerer, section: *const syntax.Section) Error![]ast.Operation {
+        const ops = try l.arena.alloc(ast.Operation, section.calls.len);
+        for (section.calls, ops) |call, *op| op.* = try l.lowerOperation(call, section.kind);
         return ops;
     }
 
-    fn lowerOperation(l: *Lowerer, call: syntax.Call) Error!ast.Operation {
+    /// `section` is the kind of section `call` is in.
+    fn lowerOperation(l: *Lowerer, call: syntax.Call, section: syntax.Section.Kind) Error!ast.Operation {
         const name = std.meta.stringToEnum(OpName, call.name) orelse
             return l.fail(call.name_span, "unknown operation '{s}'", .{call.name});
+        // ffmig cannot undo SQL it does not model.
+        if (name == .execute and section == .change) {
+            return l.fail(call.name_span, "execute is not allowed in 'change'; write 'up' and 'down'", .{});
+        }
         const kind: ast.Operation.Kind = switch (name) {
             .create_table => .{ .create_table = try l.lowerCreateTable(call) },
             .drop_table => .{ .drop_table = try l.lowerDropTable(call) },
@@ -89,6 +95,7 @@ const Lowerer = struct {
             .remove_index => .{ .remove_index = try l.lowerRemoveIndex(call) },
             .add_reference => .{ .add_column = try l.lowerAddReference(call) },
             .remove_reference => .{ .remove_column = try l.lowerRemoveReference(call) },
+            .execute => .{ .execute = try l.lowerExecute(call) },
         };
         return .{ .kind = kind, .span = call.span };
     }
@@ -187,6 +194,20 @@ const Lowerer = struct {
     fn lowerRemoveReference(l: *Lowerer, call: syntax.Call) Error!ast.RemoveColumn {
         const table, const column = try l.lowerReferenceOperation(call);
         return .{ .table = table, .name = column.name, .column = column };
+    }
+
+    /// `execute "sql"`, with an optional `dialect:`.
+    fn lowerExecute(l: *Lowerer, call: syntax.Call) Error!ast.Execute {
+        try l.expectArgCount(call, 1, 1, "\"sql\"");
+        const value = call.args[0];
+        const text = switch (value.kind) {
+            .string => |s| s,
+            else => return l.fail(value.span, "execute expects \"sql\" to be a string, found {s}", .{describe(value)}),
+        };
+        if (std.mem.indexOfNone(u8, text, " \t\r\n;") == null) return l.fail(value.span, "execute has no SQL", .{});
+        try l.checkOptions(call, &.{"dialect"});
+        try l.expectNoBlock(call);
+        return .{ .sql = text, .dialect = try l.optionDialect(call.options) };
     }
 
     /// `add_reference` / `remove_reference :table, :name, opts`.
@@ -452,6 +473,16 @@ const Lowerer = struct {
             else => {},
         }
         return l.fail(opt.value.span, "'index:' must be true, false or :unique", .{});
+    }
+
+    /// An `execute`'s `dialect:`, a symbol naming an `ast.Dialect`.
+    fn optionDialect(l: *Lowerer, options: []const syntax.Option) Error!?ast.Dialect {
+        const opt = findOption(options, "dialect") orelse return null;
+        return switch (opt.value.kind) {
+            .symbol => |s| std.meta.stringToEnum(ast.Dialect, s) orelse
+                l.fail(opt.value.span, "unknown dialect ':{s}'", .{s}),
+            else => l.fail(opt.value.span, "'dialect:' must be a symbol such as :postgres", .{}),
+        };
     }
 
     fn optionBool(l: *Lowerer, options: []const syntax.Option, key: []const u8) Error!?bool {

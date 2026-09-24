@@ -35,7 +35,10 @@ pub const Lexer = struct {
                 self.skipIdent();
                 return .{ .tag = .symbol, .span = .{ .start = start + 1, .end = self.index } };
             },
-            '"' => return self.string(start),
+            '"' => {
+                if (self.peek(0) == '"' and self.peek(1) == '"') return self.multilineString(start);
+                return self.string(start);
+            },
             '-', '0'...'9' => {
                 if (c == '-' and !isDigit(self.peek(0))) return self.make(.invalid, start);
                 while (isDigit(self.peek(0))) self.index += 1;
@@ -82,6 +85,44 @@ pub const Lexer = struct {
                     const e = self.peek(0) orelse break;
                     switch (e) {
                         '\n', '\r' => break,
+                        '"', '\\', 'n', 't' => {},
+                        else => valid = false,
+                    }
+                    self.index += 1;
+                },
+                else => self.index += 1,
+            }
+        }
+        return self.make(.invalid, start);
+    }
+
+    /// Lexes a `"""` string whose first quote at `start` is already
+    /// consumed, through the closing `"""`. Checks the line break after
+    /// the opening and the escapes; the parser checks the indentation.
+    /// Without the line break, the invalid token is the opening `"""`;
+    /// unterminated, it runs to EOF.
+    fn multilineString(self: *Lexer, start: u32) Token {
+        self.index += 2;
+        if (self.peek(0) == '\n') {
+            self.index += 1;
+        } else if (self.peek(0) == '\r' and self.peek(1) == '\n') {
+            self.index += 2;
+        } else return self.make(.invalid, start);
+
+        var valid = true;
+        while (self.peek(0)) |c| {
+            switch (c) {
+                '"' => {
+                    if (self.peek(1) == '"' and self.peek(2) == '"') {
+                        self.index += 3;
+                        return self.make(if (valid) .string else .invalid, start);
+                    }
+                    self.index += 1;
+                },
+                '\\' => {
+                    self.index += 1;
+                    const e = self.peek(0) orelse break;
+                    switch (e) {
                         '"', '\\', 'n', 't' => {},
                         else => valid = false,
                     }

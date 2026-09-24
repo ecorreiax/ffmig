@@ -1,0 +1,7 @@
+migration CreateActiveUsers
+  up
+    execute "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+    execute "CREATE VIEW active_users AS\nSELECT * FROM users WHERE deleted_at IS NULL"
+    execute "UPDATE users SET email = lower(email)" dialect=postgres
+  down
+    execute "DROP VIEW active_users"

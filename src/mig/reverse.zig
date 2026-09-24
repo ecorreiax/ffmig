@@ -49,6 +49,8 @@ fn invert(op: ast.Operation, diag: *Diagnostic) Error!ast.Operation.Kind {
             .unique = o.unique,
             .name = o.name,
         } },
+        // Lowering rejects it in `change`.
+        .execute => return irreversible(op, diag, "execute"),
     };
 }
 

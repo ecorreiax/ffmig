@@ -108,8 +108,9 @@ pub const Project = struct {
         return .{ path, source };
     }
 
-    /// Reads, parses and lowers `file`, reporting errors like `ffmig check`.
-    pub fn parse(p: Project, io: Io, arena: Allocator, file: File, err: *Writer) Writer.Error!?Parsed {
+    /// Reads, parses and lowers `file`, and checks that `dialect` can run
+    /// it both ways, reporting errors like `ffmig check`.
+    pub fn parse(p: Project, io: Io, arena: Allocator, file: File, dialect: sql.Dialect, err: *Writer) Writer.Error!?Parsed {
         const path, const source = try p.read(io, arena, file, err) orelse return null;
         var diag: mig.Diagnostic = .{};
         const migration = mig.parseMigration(arena, source, &diag) catch |e| {
@@ -119,6 +120,7 @@ pub const Project = struct {
             }
             return null;
         };
+        if (!try supported(dialect, migration, path, source, err)) return null;
         return .{ .file = file, .path = path, .source = source, .checksum = checksum(source), .migration = migration };
     }
 
@@ -131,6 +133,22 @@ pub const Project = struct {
         return !std.mem.eql(u8, &checksum(source), recorded);
     }
 };
+
+/// Whether `dialect` can run every operation of `m`, in either
+/// direction. Reports the first one it cannot like `ffmig check`. The
+/// operations a `change` derives for `down` are always supported.
+pub fn supported(dialect: sql.Dialect, m: mig.ast.Migration, path: []const u8, source: []const u8, err: *Writer) Writer.Error!bool {
+    const sections: [2][]const mig.ast.Operation = switch (m.body) {
+        .change => |ops| .{ ops, &.{} },
+        .up_down => |b| .{ b.up, b.down },
+    };
+    for (sections) |ops| for (ops) |op| {
+        const message = sql.unsupported(dialect, op) orelse continue;
+        try check.report(err, path, source, op.span, "{s}", .{message});
+        return false;
+    };
+    return true;
+}
 
 /// SHA-256 of a migration file, in lowercase hex.
 pub const Checksum = [64]u8;

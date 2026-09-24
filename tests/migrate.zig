@@ -416,6 +416,53 @@ test "transaction: false runs the migration without BEGIN and COMMIT, both ways"
     ++ unlock, rollback_fake.log.written());
 }
 
+test "execute sends its SQL as one statement, both ways" {
+    const backfill = [2][]const u8{
+        "20260105000000_backfill.mig",
+        \\migration Backfill {
+        \\  up {
+        \\    execute """
+        \\      UPDATE users SET email = lower(email);
+        \\      UPDATE users SET email = 'x' WHERE email = '';
+        \\      """
+        \\  }
+        \\  down {
+        \\    execute "SELECT 1", dialect: :postgres
+        \\  }
+        \\}
+        \\
+    };
+    var tmp = try setup(&.{ create_users, backfill });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    const log = fake.log.written();
+    try testing.expect(std.mem.indexOf(u8, log,
+        \\BEGIN;
+        \\UPDATE users SET email = lower(email);
+        \\UPDATE users SET email = 'x' WHERE email = '';
+        \\INSERT INTO "schema_migrations"
+    ) != null);
+
+    var rollback_fake: FakeDb = .init(&.{ "20260101000000", "20260105000000" });
+    defer rollback_fake.deinit();
+    var rr = try runIn(tmp.dir, &rollback_fake, .{ .rollback = .{} });
+    defer rr.deinit();
+    try testing.expectEqual(0, rr.code);
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\BEGIN;
+        \\SELECT 1;
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260105000000';
+        \\COMMIT;
+        \\
+    ++ unlock, rollback_fake.log.written());
+}
+
 test "transaction: false says that a failure keeps the statements before it" {
     var tmp = try setup(&.{ create_users, add_slug });
     defer tmp.cleanup();

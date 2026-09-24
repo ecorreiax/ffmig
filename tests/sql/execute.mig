@@ -1,0 +1,18 @@
+migration CreateActiveUsers {
+  up {
+    execute "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+    execute """
+      CREATE VIEW active_users AS
+        SELECT * FROM users
+        WHERE deleted_at IS NULL -- soft-deleted rows stay out
+      """
+    execute """
+      UPDATE users SET email = lower(email);
+      UPDATE users SET name = 'it''s me' WHERE name = '';
+
+      """, dialect: :postgres
+  }
+  down {
+    execute "DROP VIEW active_users ; "
+  }
+}

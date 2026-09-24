@@ -29,6 +29,7 @@ pub const Operation = struct {
         rename_column: RenameColumn,
         add_index: AddIndex,
         remove_index: RemoveIndex,
+        execute: Execute,
     };
 };
 
@@ -46,6 +47,17 @@ pub const RenameColumn = struct { table: []const u8, from: []const u8, to: []con
 pub const AddIndex = struct { table: []const u8, column: []const u8, unique: bool = false, name: ?[]const u8 = null };
 /// At least one of `column` and `name` is set.
 pub const RemoveIndex = struct { table: []const u8, column: ?[]const u8, unique: bool = false, name: ?[]const u8 };
+
+/// Raw SQL, run as written. Only in `up` / `down`, so never reversed.
+pub const Execute = struct {
+    sql: []const u8,
+    /// With `dialect:`, only that dialect may run it.
+    dialect: ?Dialect = null,
+};
+
+/// A database an `execute` is written for. The same values as
+/// `sql.Dialect`, kept here so that the AST does not depend on codegen.
+pub const Dialect = enum { postgres };
 
 pub const ColumnType = enum { string, text, integer, bigint, float, decimal, boolean, date, datetime, time, binary, uuid, json };
 

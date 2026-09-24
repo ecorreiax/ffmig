@@ -1,0 +1,8 @@
+migration M {
+  up {
+    create_table :t {
+      execute "SELECT 1"
+    }
+  }
+  down { }
+}

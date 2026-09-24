@@ -9,6 +9,7 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const check = @import("check.zig");
+const migrations = @import("migrations.zig");
 const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 
@@ -50,6 +51,9 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
         },
     };
 
+    const dialect: sql.Dialect = .postgres;
+    if (!try migrations.supported(dialect, migration, path, source, err)) return 1;
+
     const ops = if (!down) switch (migration.body) {
         .change => |ops| ops,
         .up_down => |b| b.up,
@@ -64,7 +68,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
         break :plan p.down;
     };
 
-    try sql.write(.postgres, ops, out);
+    try sql.write(dialect, ops, out);
     return 0;
 }
 

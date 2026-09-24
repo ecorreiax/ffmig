@@ -73,6 +73,28 @@ test "strings" {
     try expectTokens("\"h\xc3\xa9\"", &.{.{ .string, "\"h\xc3\xa9\"" }});
 }
 
+test "multi-line strings" {
+    try expectTokens("\"\"\"\n  a\n  \"\"\"", &.{.{ .string, "\"\"\"\n  a\n  \"\"\"" }});
+    try expectTokens("\"\"\"\r\n\"\"\", x", &.{ .{ .string, "\"\"\"\r\n\"\"\"" }, .{ .comma, "," }, .{ .ident, "x" } });
+    // `"` and `""` need no escape; `\"""` does not close it.
+    try expectTokens("\"\"\"\n\"a\"\" \\\"\"\"\n\"\"\" y", &.{ .{ .string, "\"\"\"\n\"a\"\" \\\"\"\"\n\"\"\"" }, .{ .ident, "y" } });
+    // `#` is not a comment inside one.
+    try expectTokens("\"\"\"\n# x\n\"\"\"", &.{.{ .string, "\"\"\"\n# x\n\"\"\"" }});
+    // `""` followed by anything else is an empty string.
+    try expectTokens("\"\" \"", &.{ .{ .string, "\"\"" }, .{ .invalid, "\"" } });
+}
+
+test "invalid multi-line strings" {
+    // No line break after the opening: only the opening is invalid.
+    try expectTokens("\"\"\" a", &.{ .{ .invalid, "\"\"\"" }, .{ .ident, "a" } });
+    try expectTokens("\"\"\"", &.{.{ .invalid, "\"\"\"" }});
+    // Unterminated: runs to the end of the source.
+    try expectTokens("\"\"\"\na\n}", &.{.{ .invalid, "\"\"\"\na\n}" }});
+    // Bad escape, including one at the end of a line: the whole string.
+    try expectTokens("\"\"\"\n\\x\n\"\"\" y", &.{ .{ .invalid, "\"\"\"\n\\x\n\"\"\"" }, .{ .ident, "y" } });
+    try expectTokens("\"\"\"\na\\\n\"\"\"", &.{.{ .invalid, "\"\"\"\na\\\n\"\"\"" }});
+}
+
 test "comments and blank lines are skipped" {
     try expectTokens(
         \\# heading

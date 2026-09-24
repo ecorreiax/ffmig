@@ -1,0 +1,8 @@
+migration AddSlugIndexConcurrently, transaction: false {
+  up {
+    execute "CREATE INDEX CONCURRENTLY index_posts_on_slug ON posts (slug)"
+  }
+  down {
+    execute "DROP INDEX CONCURRENTLY index_posts_on_slug"
+  }
+}

@@ -29,7 +29,7 @@ migration AddRoleToUsers {
 | `LABEL`   | `IDENT` immediately followed by `:`          | `null:`, `default:`   |
 | `SYMBOL`  | `:` immediately followed by `IDENT`          | `:users`, `:now`      |
 | `INTEGER` | `-?[0-9]+`, must fit in a signed 64-bit int  | `0`, `-5`, `255`      |
-| `STRING`  | `"..."` on one line, escapes `\" \\ \n \t`   | `"guest"`, `"a\"b"`   |
+| `STRING`  | `"..."` on one line, escapes `\" \\ \n \t`, or a [multi-line string](#multi-line-strings) | `"guest"`, `"a\"b"`   |
 | punctuation | `{ } , [ ]`                                | —                     |
 
 - "Immediately" means no whitespace in between: `null:false` and
@@ -41,9 +41,41 @@ migration AddRoleToUsers {
 - `[` and `]` are reserved for multi-column indexes. They lex, but no rule
   of the grammar accepts them yet, so any use is a syntax error.
 - Any other byte outside a string or comment (`@`, `=`, `;`, `.`, ...) is
-  invalid. So are an unterminated string, a line break inside a string, an
-  unknown escape such as `\x`, a lone `:`, an integer out of range, and
-  an integer immediately followed by an identifier (`0abc`).
+  invalid. So are an unterminated string, a line break inside a one-line
+  string, an unknown escape such as `\x`, a lone `:`, an integer out of
+  range, and an integer immediately followed by an identifier (`0abc`).
+
+### Multi-line strings
+
+A string that starts with `"""` runs across lines until the next `"""`
+that is not escaped.
+It is a `STRING` like any other, so it can be used wherever a string can:
+
+```
+execute """
+  UPDATE users
+  SET name = 'Ada "the first" Lovelace'
+  WHERE id = 1
+  """
+```
+
+- The opening `"""` must be followed by a line break, which is not part
+  of the value (`expected a line break after '"""'`).
+- The closing `"""` must be alone on its line, after nothing but spaces
+  and tabs (`closing '"""' must be on its own line`). The rest of the
+  call may follow it: `""", dialect: :postgres`. The line break before
+  it is not part of the value.
+- The spaces and tabs before the closing `"""` are its indentation, and
+  are removed from the start of every line. Every line must start with
+  exactly that indentation (`line is indented less than the closing
+  '"""'`), except a line of only spaces and tabs, which becomes empty.
+  Indentation beyond it is kept. The value above is three lines, with
+  no indentation and no line break at the end.
+- `"` needs no escape. `\"`, `\\`, `\n` and `\t` work as in one-line
+  strings, and `"""` inside the value is written `\"""`. A `\` at the
+  end of a line is an error (`unknown escape '\' at the end of a line`).
+- A `\r\n` line break is read as `\n`, so a file checked out with
+  Windows line endings gives the same value.
 
 ## Grammar
 
@@ -166,11 +198,28 @@ migration AddSlugIndex, transaction: false {
 - On a database whose schema changes are not transactional, every
   migration runs this way. PostgreSQL's are.
 
+Statements the language does not model run through [`execute`](#raw-sql):
+
+```
+migration AddSlugIndexConcurrently, transaction: false {
+  up {
+    execute "CREATE INDEX CONCURRENTLY index_posts_on_slug ON posts (slug)"
+  }
+  down {
+    execute "DROP INDEX CONCURRENTLY index_posts_on_slug"
+  }
+}
+```
+
+Without `transaction: false`, PostgreSQL refuses it:
+`CREATE INDEX CONCURRENTLY cannot run inside a transaction block`.
+
 ## Database neutrality
 
 The language describes schema, not SQL. It contains no database-specific
-types, functions or raw SQL, so the same file can run on PostgreSQL, MySQL
-or SQLite. Each column type is defined by its meaning (for example
+types or functions, so the same file can run on PostgreSQL, MySQL or
+SQLite. The one exception is [`execute`](#raw-sql), which runs SQL as
+written; a file that uses it opts out of portability. Each column type is defined by its meaning (for example
 `datetime` is a date and time without time zone), and mapping it to a real
 SQL type is each dialect's job. If a dialect cannot express something
 (say, a default on a `text` column in MySQL), that dialect reports it when
@@ -189,11 +238,13 @@ generating SQL; the file itself stays valid.
 | `remove_index`  | `:table [, :column]`            | `unique:`, `name:`                     | none  |
 | `add_reference` | `:table, :name`                 | reference options                      | none  |
 | `remove_reference` | `:table, :name`              | reference options                      | none  |
+| `execute`       | `"sql"`                         | `dialect:`                             | none  |
 
 Common rules:
 
-- Positional arguments are symbols. Table, column and type names are
-  never strings: `add_column "users", ...` is an error.
+- Positional arguments are symbols, except `execute`'s SQL. Table,
+  column and type names are never strings: `add_column "users", ...` is
+  an error.
 - The number of positional arguments must match exactly, e.g.
   `add_column expects 3 arguments (:table, :column, :type), got 2`.
 - An option not listed for an operation is an error
@@ -274,6 +325,51 @@ remove_reference :posts, :user, null: false, on_delete: :cascade
   index with it. It lowers to a `remove_column` that describes the column.
   Every reference option has a default, so it is always reversible: the
   undo recreates the reference exactly as written, like `remove_index`.
+
+## Raw SQL
+
+`execute` runs SQL that the language does not model: extensions, views,
+functions, triggers, check constraints, data backfills.
+
+```
+migration CreateActiveUsers {
+  up {
+    execute "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+    execute """
+      CREATE VIEW active_users AS
+      SELECT * FROM users WHERE deleted_at IS NULL
+      """
+    execute "UPDATE users SET email = lower(email)", dialect: :postgres
+  }
+  down {
+    execute "DROP VIEW active_users"
+  }
+}
+```
+
+- `execute` takes one string, the SQL
+  (`execute expects "sql" to be a string, found a symbol`), usually a
+  [multi-line string](#multi-line-strings). ffmig does not read it: it
+  is sent to the database as written, as one statement of the migration.
+  A string of only whitespace and `;` is an error (`execute has no SQL`).
+- It is allowed only in `up` and `down`, never in `change`
+  (`execute is not allowed in 'change'; write 'up' and 'down'`): ffmig
+  cannot derive the undo of SQL it does not understand, so the file
+  writes both directions.
+- The string may hold several statements separated by `;`. PostgreSQL
+  runs them as one implicit transaction, so a statement that cannot run
+  in a transaction (`CREATE INDEX CONCURRENTLY`) must be alone in its
+  `execute`, in a `transaction: false` migration (see
+  [Transactions](#transactions)).
+- A trailing `;` is optional. `ffmig sql` prints each `execute` followed
+  by one `;`, whether the string ends in one or not, and puts that `;` on
+  a line of its own when the last line holds a `--` comment.
+- `dialect:` names the one database the SQL is written for. Its value is
+  a symbol: `:postgres`, the only dialect so far; any other is an error
+  (`unknown dialect ':mysql'`). With it, running the migration on another
+  database fails before anything runs (`execute is for postgres only`),
+  in both directions. Without it, the SQL runs as written on any
+  database.
 
 ## Table blocks
 
@@ -462,7 +558,9 @@ dialect translates it to its own SQL, so the file stays portable.
 
 More names (e.g. `:uuid`) can be added later by extending this table.
 
-Raw SQL defaults are not part of the language.
+Defaults written in SQL are not part of the language. An `up` / `down`
+migration can set one with [`execute`](#raw-sql)
+(`ALTER TABLE ... ALTER COLUMN ... SET DEFAULT ...`).
 
 ## Reversibility
 
@@ -484,6 +582,7 @@ everything needed to undo it:
 | `remove_index :t, name: "n"`         | **irreversible**                         |
 | `add_reference :t, :name, opts`      | `remove_reference :t, :name, opts`       |
 | `remove_reference :t, :name, opts`   | `add_reference :t, :name, opts`          |
+| `execute "sql"`                      | not allowed in `change`                  |
 
 `remove_index` and `unique:`: `remove_index` accepts `unique:` and is
 reversible whenever it has a column. The undo recreates the index exactly
@@ -570,6 +669,17 @@ Each of these is rejected; the message is what `ffmig check` reports.
 | `add_reference :t, :user, null: false, on_delete: :nullify` | `on_delete: :nullify on non-null column 'user_id'` |
 | `add_reference :t, :user, foreign_key: false, to: :people` | `'to:' needs a foreign key` |
 | `create_table :t, id: :integer { }`                 | `id:` must be `:bigint`, `:uuid` or `false` |
+| `execute "CREATE EXTENSION pgcrypto"`               | `execute is not allowed in 'change'; write 'up' and 'down'` |
+| `execute` (inside `up`)                             | `execute expects 1 argument ("sql"), got 0` |
+| `execute :users` (inside `up`)                      | `execute expects "sql" to be a string, found a symbol` |
+| `execute " ; "` (inside `up`)                       | `execute has no SQL` |
+| `execute "SELECT 1", dialect: :mysql` (inside `up`) | `unknown dialect ':mysql'` |
+| `execute "SELECT 1", dialect: "postgres"` (inside `up`) | `'dialect:' must be a symbol such as :postgres` |
+| `execute """ SELECT 1` ... (inside `up`)             | syntax error: `expected a line break after '"""'` |
+| a multi-line string whose `SELECT 1"""` closes on a line with text | syntax error: `closing '"""' must be on its own line` |
+| a multi-line string with a line indented less than its closing `"""` | syntax error: `line is indented less than the closing '"""'` |
+| a multi-line string with a line ending in `\`       | syntax error: `unknown escape '\' at the end of a line` |
+| a `"""` that is never closed                         | syntax error: `unterminated string` |
 | `migration M, transaction: 0 { change { } }` (whole file) | `'transaction:' must be true or false` |
 | `migration M, lock: true { change { } }` (whole file) | `unknown option 'lock' for migration` |
 | `migration M, :fast { change { } }` (whole file)    | `migration takes only options, such as 'transaction: false'` |

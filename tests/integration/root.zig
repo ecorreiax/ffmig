@@ -613,3 +613,76 @@ test "a one-column schema_migrations is upgraded in place" {
     try f.expectVersions("20260101000000,20260101120000,20260102000000");
     try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_add_role.mig\n", "");
 }
+
+test "execute creates an extension, a view and a backfill, and rolls them back" {
+    const active_users = [2][]const u8{
+        "20260102000000_active_users.mig",
+        \\migration ActiveUsers {
+        \\  up {
+        \\    execute "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+        \\    add_column :users, :token, :string
+        \\    execute """
+        \\      CREATE VIEW active_users AS
+        \\        SELECT id, email FROM users WHERE email <> '';
+        \\      UPDATE users SET token = encode(digest(email, 'sha256'), 'hex');
+        \\      """, dialect: :postgres
+        \\  }
+        \\  down {
+        \\    execute "DROP VIEW active_users;"
+        \\    remove_column :users, :token
+        \\    execute "DROP EXTENSION pgcrypto"
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("execute", &.{create_users});
+    defer f.deinit();
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101000000_create_users.mig\n", "");
+    try exec(f.conn, "INSERT INTO users (email) VALUES ('a@b.c'), ('')");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "db/" ++ active_users[0], .data = active_users[1] });
+
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_active_users.mig\n", "");
+    try f.expectQuery("SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'", "pgcrypto");
+    try f.expectQuery("SELECT email FROM active_users", "a@b.c");
+    try f.expectQuery("SELECT left(token, 8) FROM users WHERE email = 'a@b.c'", "d648b243");
+
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_active_users.mig\n", "");
+    try f.expectQuery("SELECT extname FROM pg_extension WHERE extname = 'pgcrypto'", "");
+    try f.expectQuery("SELECT viewname FROM pg_views WHERE viewname = 'active_users'", "");
+    try f.expectColumns("users", "id,email");
+    try f.expectVersions("20260101000000");
+}
+
+test "CREATE INDEX CONCURRENTLY through execute needs transaction: false" {
+    const concurrently =
+        \\  up {
+        \\    execute "CREATE INDEX CONCURRENTLY index_users_on_email ON users (email)"
+        \\  }
+        \\  down {
+        \\    execute "DROP INDEX CONCURRENTLY index_users_on_email"
+        \\  }
+        \\}
+        \\
+    ;
+    const name = "db/20260102000000_index_email.mig";
+    var f: Fixture = try .init("execute_concurrently", &.{create_users});
+    defer f.deinit();
+    const indexes = "SELECT indexname FROM pg_indexes WHERE tablename = 'users' ORDER BY indexname";
+
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "migration IndexEmail {\n" ++ concurrently });
+    try f.expectRun(&.{"migrate"}, 1, "Migrated db/20260101000000_create_users.mig\n",
+        \\ffmig: db/20260102000000_index_email.mig: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+        \\while running:
+        \\CREATE INDEX CONCURRENTLY index_users_on_email ON users (email);
+        \\
+    );
+    try f.expectQuery(indexes, "users_pkey");
+    try f.expectVersions("20260101000000");
+
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "migration IndexEmail, transaction: false {\n" ++ concurrently });
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_index_email.mig\n", "");
+    try f.expectQuery(indexes, "index_users_on_email,users_pkey");
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_index_email.mig\n", "");
+    try f.expectQuery(indexes, "users_pkey");
+    try f.expectVersions("20260101000000");
+}

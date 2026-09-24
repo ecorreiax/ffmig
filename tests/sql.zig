@@ -69,6 +69,18 @@ test "postgres writes an empty table without id as ()" {
     );
 }
 
+test "execute runs on every dialect unless it names one" {
+    const span: mig.token.Span = .{ .start = 0, .end = 0 };
+    inline for (comptime std.enums.values(sql.Dialect)) |dialect| {
+        const any: ast.Operation = .{ .span = span, .kind = .{ .execute = .{ .sql = "SELECT 1" } } };
+        try testing.expectEqual(null, sql.unsupported(dialect, any));
+    }
+    const only: ast.Operation = .{ .span = span, .kind = .{ .execute = .{ .sql = "SELECT 1", .dialect = .postgres } } };
+    try testing.expectEqual(null, sql.unsupported(.postgres, only));
+    const other: ast.Operation = .{ .span = span, .kind = .{ .drop_table = .{ .table = "t", .columns = null } } };
+    try testing.expectEqual(null, sql.unsupported(.postgres, other));
+}
+
 test "capabilities" {
     try testing.expect(sql.capabilities(.postgres).transactional_ddl);
     try testing.expect(sql.capabilities(.postgres).advisory_lock);

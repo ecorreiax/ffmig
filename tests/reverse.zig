@@ -179,6 +179,17 @@ test "up_down passes through untouched, including irreversible operations" {
     try testing.expectEqual(migration.body.up_down.down.ptr, p.down.ptr);
 }
 
+test "execute is never inverted" {
+    // Lowering rejects it in `change`; a hand-built one is irreversible.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var ops = [_]ast.Operation{.{ .span = .{ .start = 1, .end = 2 }, .kind = .{ .execute = .{ .sql = "SELECT 1" } } }};
+    const migration: ast.Migration = .{ .name = "M", .body = .{ .change = &ops } };
+    var diag: Diagnostic = .{};
+    try testing.expectError(error.Irreversible, reverse.plan(arena_state.allocator(), migration, &diag));
+    try testing.expectEqualStrings("execute is irreversible", diag.message);
+}
+
 test "reversing down gives back up" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();

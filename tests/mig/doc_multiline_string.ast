@@ -1,0 +1,5 @@
+migration RenameAda
+  up
+    execute "UPDATE users\nSET name = 'Ada \"the first\" Lovelace'\nWHERE id = 1"
+  down
+    execute "UPDATE users SET name = 'Ada Lovelace' WHERE id = 1"

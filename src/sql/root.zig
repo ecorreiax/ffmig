@@ -1,6 +1,8 @@
 //! SQL generation. Turns `ast.Operation`s into SQL statements for one
 //! dialect, each ending with `;\n`: one per operation, plus an index
-//! statement per reference (see `Statements`).
+//! statement per reference (see `Statements`). An `execute` is written as
+//! is, and may hold several statements. Callers check `unsupported`
+//! before writing anything.
 //!
 //! This file holds what every dialect shares: the shape of each statement
 //! and default index names. Each dialect file (`postgres.zig`) holds only
@@ -30,6 +32,23 @@ pub const Capabilities = struct {
 pub fn capabilities(dialect: Dialect) Capabilities {
     return switch (dialect) {
         .postgres => postgres.capabilities,
+    };
+}
+
+/// Why `dialect` cannot run `op`, or null when it can: an `execute`
+/// whose `dialect:` names another database. Callers check every
+/// operation of a migration before running any of it.
+pub fn unsupported(dialect: Dialect, op: ast.Operation) ?[]const u8 {
+    const only = switch (op.kind) {
+        .execute => |o| o.dialect orelse return null,
+        else => return null,
+    };
+    const own: ast.Dialect = switch (dialect) {
+        .postgres => .postgres,
+    };
+    if (only == own) return null;
+    return switch (only) {
+        inline else => |d| "execute is for " ++ @tagName(d) ++ " only",
     };
 }
 
@@ -229,6 +248,8 @@ fn writeAll(comptime D: type, ops: []const ast.Operation, w: *Writer) Writer.Err
     var it: Statements = .{ .ops = ops };
     while (it.next()) |op| {
         try statement(D, op.kind, w);
+        // A `--` comment on the last line would swallow the `;`.
+        if (op.kind == .execute and endsInComment(withoutTerminator(op.kind.execute.sql))) try w.writeByte('\n');
         try w.writeAll(";\n");
     }
 }
@@ -340,7 +361,23 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
             // Lowering guarantees a column or a name.
             try indexName(D, o.table, o.column orelse "", o.name, w);
         },
+        .execute => |o| try w.writeAll(withoutTerminator(o.sql)),
     }
+}
+
+/// Whether the last line of `text` may end in a `--` comment.
+fn endsInComment(text: []const u8) bool {
+    const line_start = if (std.mem.lastIndexOfScalar(u8, text, '\n')) |i| i + 1 else 0;
+    return std.mem.indexOf(u8, text[line_start..], "--") != null;
+}
+
+/// `text` without the whitespace and the one `;` it ends with, since the
+/// caller adds its own.
+fn withoutTerminator(text: []const u8) []const u8 {
+    const whitespace = " \t\r\n";
+    const trimmed = std.mem.trimEnd(u8, text, whitespace);
+    if (!std.mem.endsWith(u8, trimmed, ";")) return trimmed;
+    return std.mem.trimEnd(u8, trimmed[0 .. trimmed.len - 1], whitespace);
 }
 
 fn alterTable(comptime D: type, table: []const u8, w: *Writer) Writer.Error!void {

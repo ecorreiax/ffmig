@@ -10,6 +10,8 @@
 //!       column owner_id uuid not_null reference fk=users on_delete=cascade index
 //!     add_index users_profile email unique
 //! ```
+//!
+//! `execute` prints its SQL as one escaped string: `execute "SELECT 1\n"`.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -72,6 +74,11 @@ fn operation(w: *Writer, kind: ast.Operation.Kind) Writer.Error!void {
         .rename_column => |o| try w.print(" {s} {s} {s}\n", .{ o.table, o.from, o.to }),
         .add_index => |o| try index(w, o.table, o.column, o.unique, o.name),
         .remove_index => |o| try index(w, o.table, o.column, o.unique, o.name),
+        .execute => |o| {
+            try w.print(" \"{f}\"", .{std.zig.fmtString(o.sql)});
+            if (o.dialect) |d| try w.print(" dialect={t}", .{d});
+            try w.writeByte('\n');
+        },
     }
 }
 

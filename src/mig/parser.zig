@@ -176,7 +176,7 @@ const Parser = struct {
         const text = tok.span.slice(p.source);
         const kind: syntax.Value.Kind = switch (tok.tag) {
             .symbol => .{ .symbol = text },
-            .string => .{ .string = try p.unescape(text) },
+            .string => .{ .string = try p.stringValue(tok.span) },
             .integer => .{ .integer = std.fmt.parseInt(i64, text, 10) catch
                 return p.fail(tok.span, "integer '{s}' does not fit in 64 bits", .{text}) },
             .kw_true => .{ .boolean = true },
@@ -188,24 +188,49 @@ const Parser = struct {
         return .{ .kind = kind, .span = fullSpan(tok) };
     }
 
-    /// `quoted` is a valid string token, quotes included. Returns a slice of
-    /// the source when there are no escapes to resolve.
-    fn unescape(p: *Parser, quoted: []const u8) Error![]const u8 {
-        const inner = quoted[1 .. quoted.len - 1];
+    /// The value of a valid string token. A one-line string without
+    /// escapes is a slice of the source.
+    fn stringValue(p: *Parser, span: Span) Error![]const u8 {
+        const text = span.slice(p.source);
+        if (std.mem.startsWith(u8, text, multiline_quote)) return p.multilineValue(span);
+        const inner = text[1 .. text.len - 1];
         if (std.mem.indexOfScalar(u8, inner, '\\') == null) return inner;
         var out: std.ArrayList(u8) = try .initCapacity(p.arena, inner.len);
-        var i: usize = 0;
-        while (i < inner.len) : (i += 1) {
-            if (inner[i] != '\\') {
-                out.appendAssumeCapacity(inner[i]);
-                continue;
+        unescape(&out, inner);
+        return out.items;
+    }
+
+    /// A valid `"""` string. The closing `"""` must be alone on its line,
+    /// and its indentation is removed from every line. A line of only
+    /// whitespace may be indented less, and becomes empty. The line
+    /// breaks after the opening and before the closing are not part of
+    /// the value, and `\r\n` is read as `\n`.
+    fn multilineValue(p: *Parser, span: Span) Error![]const u8 {
+        const text = span.slice(p.source);
+        const opening: u32 = if (text[3] == '\r') 5 else 4;
+        // The lines, then the closing `"""`'s indentation.
+        const body = text[opening .. text.len - multiline_quote.len];
+        const last_break = std.mem.lastIndexOfScalar(u8, body, '\n');
+        const indent = if (last_break) |i| body[i + 1 ..] else body;
+        if (std.mem.indexOfNone(u8, indent, " \t") != null) {
+            const closing: Span = .{ .start = span.end - quote_len, .end = span.end };
+            return p.fail(closing, "closing '\"\"\"' must be on its own line", .{});
+        }
+
+        const content = body[0 .. last_break orelse return ""];
+        var out: std.ArrayList(u8) = try .initCapacity(p.arena, content.len);
+        const first_line = span.start + opening;
+        var line_start = first_line;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |raw| : (line_start += @intCast(raw.len + 1)) {
+            if (line_start != first_line) out.appendAssumeCapacity('\n');
+            const line = if (std.mem.endsWith(u8, raw, "\r")) raw[0 .. raw.len - 1] else raw;
+            if (std.mem.startsWith(u8, line, indent)) {
+                unescape(&out, line[indent.len..]);
+            } else if (std.mem.indexOfNone(u8, line, " \t")) |i| {
+                const text_start = line_start + @as(u32, @intCast(i));
+                return p.fail(.{ .start = text_start, .end = text_start + 1 }, "line is indented less than the closing '\"\"\"'", .{});
             }
-            i += 1;
-            out.appendAssumeCapacity(switch (inner[i]) {
-                'n' => '\n',
-                't' => '\t',
-                else => inner[i], // `"` or `\`; the lexer rejects anything else
-            });
         }
         return out.items;
     }
@@ -243,11 +268,23 @@ const Parser = struct {
         const text = span.slice(p.source);
         switch (text[0]) {
             '"' => {
-                var i: u32 = 1;
+                const multiline = std.mem.startsWith(u8, text, multiline_quote);
+                const opening: Span = .{ .start = span.start, .end = span.start + quote_len };
+                if (multiline) {
+                    const after = p.source[opening.end..];
+                    if (!std.mem.startsWith(u8, after, "\n") and !std.mem.startsWith(u8, after, "\r\n")) {
+                        return p.fail(opening, "expected a line break after '\"\"\"'", .{});
+                    }
+                }
+                var i: u32 = if (multiline) quote_len else 1;
                 while (i + 1 < text.len) : (i += 1) {
                     if (text[i] != '\\') continue;
                     switch (text[i + 1]) {
                         '"', '\\', 'n', 't' => i += 1,
+                        '\n', '\r' => {
+                            const backslash: Span = .{ .start = span.start + i, .end = span.start + i + 1 };
+                            return p.fail(backslash, "unknown escape '\\' at the end of a line", .{});
+                        },
                         else => {
                             const len = std.unicode.utf8ByteSequenceLength(text[i + 1]) catch 1;
                             const end = @min(i + 1 + len, @as(u32, @intCast(text.len)));
@@ -256,7 +293,7 @@ const Parser = struct {
                         },
                     }
                 }
-                return p.fail(span, "unterminated string", .{});
+                return p.fail(if (multiline) opening else span, "unterminated string", .{});
             },
             ':' => return p.fail(span, "expected a name after ':'", .{}),
             '-', '0'...'9' => {
@@ -278,6 +315,28 @@ const Parser = struct {
         return error.InvalidSyntax;
     }
 };
+
+/// Opens and closes a multi-line string.
+const multiline_quote = "\"\"\"";
+const quote_len: u32 = multiline_quote.len;
+
+/// Appends `escaped`, the inside of a valid string, with its escapes
+/// resolved. `out` has room for all of it.
+fn unescape(out: *std.ArrayList(u8), escaped: []const u8) void {
+    var i: usize = 0;
+    while (i < escaped.len) : (i += 1) {
+        if (escaped[i] != '\\') {
+            out.appendAssumeCapacity(escaped[i]);
+            continue;
+        }
+        i += 1;
+        out.appendAssumeCapacity(switch (escaped[i]) {
+            'n' => '\n',
+            't' => '\t',
+            else => escaped[i], // `"` or `\`; the lexer rejects anything else
+        });
+    }
+}
 
 fn isValue(tag: Tag) bool {
     return switch (tag) {

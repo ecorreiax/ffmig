@@ -20,7 +20,8 @@ pub const Tag = enum {
     /// `:users` (span excludes the colon)
     symbol,
     integer,
-    /// Span includes the quotes; unescaping happens in the parser.
+    /// Span includes the quotes, `"""` for a multi-line string;
+    /// unescaping happens in the parser.
     string,
     kw_true,
     kw_false,
@@ -31,7 +32,8 @@ pub const Tag = enum {
     r_bracket,
     comma,
     eof,
-    /// Unterminated string, bad escape, lone `:` or unexpected byte.
+    /// Unterminated string, bad escape, `"""` not followed by a line
+    /// break, lone `:` or unexpected byte.
     invalid,
 };
 

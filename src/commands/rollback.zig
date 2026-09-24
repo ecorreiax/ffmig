@@ -97,7 +97,7 @@ pub fn rollback(
             ok = false;
             continue;
         };
-        const p = try project.parse(env.io, arena, file, err) orelse {
+        const p = try project.parse(env.io, arena, file, conn.dialect, err) orelse {
             ok = false;
             continue;
         };

@@ -137,6 +137,51 @@ test "values" {
     try testing.expectEqual(false, call.options[1].value.kind.boolean);
 }
 
+/// The value of `string`, a string token, as the only argument of a call.
+fn expectString(string: []const u8, expected: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    const source = try std.mem.concat(arena.allocator(), u8, &.{ "migration M { up {\n  f ", string, "\n} down { } }" });
+    const file = parse(arena.allocator(), source, &diag) catch |e| {
+        std.debug.print("{s}\n", .{diag.message});
+        return e;
+    };
+    try testing.expectEqualStrings(expected, file.sections[0].calls[0].args[0].kind.string);
+}
+
+test "multi-line strings" {
+    // The closing `"""`'s indentation goes; deeper indentation stays.
+    try expectString(
+        \\"""
+        \\    SELECT *
+        \\      FROM t
+        \\    """
+    , "SELECT *\n  FROM t");
+    // A line of only whitespace may be shorter, and becomes empty; a
+    // longer one keeps what is past the indentation.
+    try expectString("\"\"\"\n  a\n\n \n     \n  b\n  \"\"\"", "a\n\n\n   \nb");
+    // No indentation, empty, one empty line, CRLF, and tabs.
+    try expectString("\"\"\"\na\n\"\"\"", "a");
+    try expectString("\"\"\"\n  \"\"\"", "");
+    try expectString("\"\"\"\n\n\"\"\"", "");
+    try expectString("\"\"\"\r\n  a\r\n  b\r\n  \"\"\"", "a\nb");
+    try expectString("\"\"\"\n\t\ta\n\t\"\"\"", "\ta");
+    // Quotes, escapes, and a line break at the end.
+    try expectString(
+        \\"""
+        \\  say "hi" "" \""" \\ \t\n
+        \\  """
+    , "say \"hi\" \"\" \"\"\" \\ \t\n");
+    // The rest of the call follows the closing `"""`.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    const call = (try parse(arena.allocator(), "migration M { up { f \"\"\"\n  a\n  \"\"\", k: 1 } down { } }", &diag)).sections[0].calls[0];
+    try testing.expectEqualStrings("a", call.args[0].kind.string);
+    try testing.expectEqualStrings("k", call.options[0].key);
+}
+
 test "arguments after the migration name" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -207,6 +252,16 @@ test "syntax errors" {
         .{ "migration M { change { x \xc3\xa9 } }", "unexpected character '\xc3\xa9'", "\xc3" },
         .{ "migration M { change { x \x00 } }", "unexpected byte 0x00", "\x00" },
         .{ "migration@", "unexpected character '@'", "@" },
+        // Multi-line strings.
+        .{ "migration M { up { x \"\"\" a\n\"\"\" } }", "expected a line break after '\"\"\"'", "\"\"\"" },
+        .{ "migration M { up { x \"\"\"", "expected a line break after '\"\"\"'", "\"\"\"" },
+        .{ "migration M { up { x \"\"\"\n a\n", "unterminated string", "\"\"\"" },
+        .{ "migration M { up { x \"\"\"\n a\\q\n \"\"\" } }", "unknown escape '\\q' in string", "\\q" },
+        .{ "migration M { up { x \"\"\"\n a\\\n \"\"\" } }", "unknown escape '\\' at the end of a line", "\\\n" },
+        .{ "migration M { up { x \"\"\"\n  a\"\"\" } }", "closing '\"\"\"' must be on its own line", "\"\"\" }" },
+        .{ "migration M { up { x \"\"\"\n  a \"\"\" } }", "closing '\"\"\"' must be on its own line", "\"\"\" }" },
+        .{ "migration M { up { x \"\"\"\n  a\n b\n  \"\"\" } }", "line is indented less than the closing '\"\"\"'", "b\n" },
+        .{ "migration M { up { x \"\"\"\n  a\n\tb\n  \"\"\" } }", "line is indented less than the closing '\"\"\"'", "b\n  \"" },
     };
     for (cases) |c| {
         errdefer std.debug.print("source: {s}\n", .{c[0]});

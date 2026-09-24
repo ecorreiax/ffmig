@@ -1,0 +1,9 @@
+migration M {
+  up {
+    execute """
+      SELECT *
+    FROM users
+      """
+  }
+  down { }
+}

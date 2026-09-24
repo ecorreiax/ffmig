@@ -1,0 +1,6 @@
+migration M {
+  up {
+    execute "SELECT 1", dialect: "postgres"
+  }
+  down { }
+}

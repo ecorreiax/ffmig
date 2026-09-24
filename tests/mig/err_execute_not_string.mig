@@ -1,0 +1,6 @@
+migration M {
+  up {
+    execute :users
+  }
+  down { }
+}
