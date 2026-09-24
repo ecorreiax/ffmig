@@ -1,10 +1,13 @@
-//! `ffmig migrate`
+//! `ffmig migrate [--lock-wait SECONDS]`
 //!
 //! Runs, in version order, every migration whose version is not recorded
 //! in `schema_migrations`. Every pending file is parsed and checked before
 //! anything runs, so a broken file never leaves half a batch applied.
 //! Each migration runs in its own transaction together with the insert of
 //! its version; a failure stops the batch and keeps what already ran.
+//! The whole run holds the migration lock, so a concurrent `migrate` or
+//! `rollback` on the same database waits for it (up to `--lock-wait`
+//! seconds) and then sees what this one applied.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,13 +15,18 @@ const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
 
-pub const usage = "Usage: ffmig migrate\n";
+pub const usage = "Usage: ffmig migrate [--lock-wait SECONDS]\n";
+
+pub const Options = struct {
+    /// Seconds to wait for another run to release the migration lock.
+    lock_wait: u32 = migrations.default_lock_wait,
+};
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
-    if (args.len != 0) {
+    const options = parseArgs(args) orelse {
         try err.writeAll(usage);
         return 1;
-    }
+    };
 
     var arena_state: std.heap.ArenaAllocator = .init(env.gpa);
     defer arena_state.deinit();
@@ -28,7 +36,20 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     defer project.close(env.io);
     const conn = try migrations.connect(env, arena, project.url, err) orelse return 1;
     defer conn.db.close();
-    return migrate(env, arena, project, conn, out, err);
+    return migrate(env, arena, project, conn, options, out, err);
+}
+
+/// The options, or null for invalid arguments.
+fn parseArgs(args: []const []const u8) ?Options {
+    var options: Options = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 2) {
+        if (i + 1 == args.len) return null;
+        if (std.mem.eql(u8, args[i], "--lock-wait")) {
+            options.lock_wait = migrations.parseLockWait(args[i + 1]) orelse return null;
+        } else return null;
+    }
+    return options;
 }
 
 /// `run` after connecting, split out so tests can pass a fake database.
@@ -37,9 +58,15 @@ pub fn migrate(
     arena: Allocator,
     project: migrations.Project,
     conn: migrations.Connection,
+    options: Options,
     out: *Writer,
     err: *Writer,
 ) Writer.Error!u8 {
+    if (!try migrations.lock(env.io, arena, conn, options.lock_wait, err)) {
+        try err.writeAll("ffmig: nothing was migrated\n");
+        return 1;
+    }
+    defer migrations.unlock(arena, conn);
     const applied = try migrations.appliedVersions(arena, conn, err) orelse return 1;
     const files = migrations.pending(arena, project.files, applied) catch {
         try migrations.outOfMemory(err);

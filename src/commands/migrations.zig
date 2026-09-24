@@ -1,6 +1,7 @@
 //! What the commands that touch the database share: loading the config
-//! and the migration files, connecting, reading the recorded versions,
-//! and running one migration's statements together with its tracking row.
+//! and the migration files, connecting, taking the migration lock,
+//! reading the recorded versions, and running one migration's statements
+//! together with its tracking row.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -204,6 +205,66 @@ pub fn open(arena: Allocator, url: Url, err: *Writer) Writer.Error!?Connection {
         return null;
     };
     return .{ .db = conn, .dialect = url.dialect };
+}
+
+/// Seconds that `migrate` and `rollback` wait for the lock by default.
+pub const default_lock_wait = 60;
+
+/// How often `lock` asks again while another run holds the lock.
+const lock_poll: Io.Duration = .fromMilliseconds(500);
+
+/// Parses a `--lock-wait` value: whole seconds, 0 for no wait.
+pub fn parseLockWait(arg: []const u8) ?u32 {
+    return std.fmt.parseInt(u32, arg, 10) catch null;
+}
+
+/// Takes the lock that keeps two runs on one database apart, waiting up
+/// to `wait` seconds for another run to release it. Polls instead of
+/// blocking, so the wait is bounded, says once that it is waiting, and
+/// does not depend on the session's `lock_timeout`. Reports failure to
+/// `err` and returns false. Does nothing for dialects without
+/// `advisory_lock`. The caller releases the lock with `unlock`.
+pub fn lock(io: Io, arena: Allocator, conn: Connection, wait: u32, err: *Writer) Writer.Error!bool {
+    if (!sql.capabilities(conn.dialect).advisory_lock) return true;
+    const statement = lockSql(arena, conn.dialect, .try_lock) catch {
+        try outOfMemory(err);
+        return false;
+    };
+    const deadline: Io.Clock.Timestamp = .fromNow(io, .{ .raw = .fromSeconds(wait), .clock = .awake });
+    var waiting = false;
+    while (true) {
+        var diag: db.Diagnostic = .{};
+        const rows = conn.db.query(arena, statement, &diag) catch |e| {
+            try dbError(e, err, "cannot take the migration lock", diag);
+            return false;
+        };
+        if (rows.len != 0) return true;
+        const left = deadline.durationFromNow(io).raw;
+        if (left.nanoseconds <= 0) break;
+        if (!waiting) {
+            waiting = true;
+            try err.writeAll("Waiting for another ffmig run to finish...\n");
+            try err.flush();
+        }
+        io.sleep(if (left.nanoseconds < lock_poll.nanoseconds) left else lock_poll, .awake) catch break;
+    }
+    try err.print("ffmig: another ffmig run holds the lock on this database; gave up after {d}s (see --lock-wait)\n", .{wait});
+    return false;
+}
+
+/// Releases the lock that `lock` took. Failures are ignored: the lock
+/// goes away with the connection anyway.
+pub fn unlock(arena: Allocator, conn: Connection) void {
+    if (!sql.capabilities(conn.dialect).advisory_lock) return;
+    const statement = lockSql(arena, conn.dialect, .unlock) catch return;
+    var diag: db.Diagnostic = .{};
+    conn.db.exec(statement, &diag) catch {};
+}
+
+fn lockSql(arena: Allocator, dialect: db.Dialect, l: sql.Lock) Allocator.Error![]const u8 {
+    var w: Writer.Allocating = .init(arena);
+    sql.writeLock(dialect, l, &w.writer) catch return error.OutOfMemory;
+    return w.written();
 }
 
 /// Creates the tracking table if it is missing and returns the recorded

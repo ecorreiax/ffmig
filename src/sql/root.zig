@@ -22,6 +22,9 @@ pub const Capabilities = struct {
     /// DDL statements take part in transactions, so a failed migration
     /// leaves no partial schema change behind.
     transactional_ddl: bool,
+    /// The database has a lock that `migrate` and `rollback` hold for the
+    /// whole run (`Lock`), so two runs on one database take turns.
+    advisory_lock: bool,
 };
 
 pub fn capabilities(dialect: Dialect) Capabilities {
@@ -92,6 +95,23 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
             try w.writeAll(" = ");
             try D.literal(w, .{ .string = v });
         },
+    }
+}
+
+/// A statement on the lock that keeps two runs on one database apart.
+/// Only for dialects whose `Capabilities.advisory_lock` is set.
+pub const Lock = enum {
+    /// Takes the lock if it is free. Selects one row if it was taken,
+    /// none if another connection holds it.
+    try_lock,
+    /// Releases it.
+    unlock,
+};
+
+/// Writes one lock statement, without a trailing `;`.
+pub fn writeLock(dialect: Dialect, l: Lock, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try postgres.lock(w, l),
     }
 }
 

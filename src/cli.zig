@@ -25,8 +25,11 @@ pub const usage =
     \\  sql <file>     Print the PostgreSQL for a migration's up plan
     \\                   --down        Print the down plan instead
     \\  migrate        Apply every pending migration
+    \\                   --lock-wait <s>  Wait up to s seconds for another run
+    \\                                    to finish (default: 60)
     \\  rollback       Undo the last applied migration
-    \\                   --step <n>    Undo the last n instead
+    \\                   --step <n>       Undo the last n instead
+    \\                   --lock-wait <s>  As for migrate
     \\  status         List migrations as up or down
     \\  help           Show this message
     \\

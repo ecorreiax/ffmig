@@ -15,10 +15,13 @@ const Env = commands.Env;
 const testing = std.testing;
 
 /// Returns `applied` for the version query and logs every other statement.
-/// Fails the first statement that contains `fail_on`.
+/// Fails the first statement that contains `fail_on`. The migration lock
+/// is free unless `busy` is set, which refuses that many attempts to take
+/// it.
 const FakeDb = struct {
     applied: []const []const u8 = &.{},
     fail_on: ?[]const u8 = null,
+    busy: usize = 0,
     log: Writer.Allocating,
 
     fn init(applied: []const []const u8) FakeDb {
@@ -47,6 +50,12 @@ const FakeDb = struct {
     fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, _: *db.Diagnostic) db.Error![]const []const u8 {
         const f: *FakeDb = @ptrCast(@alignCast(ptr));
         std.debug.assert(std.mem.startsWith(u8, statement, "SELECT"));
+        if (std.mem.indexOf(u8, statement, "pg_try_advisory_lock") != null) {
+            f.log.writer.print("{s};\n", .{statement}) catch return error.OutOfMemory;
+            if (f.busy == 0) return arena.dupe([]const u8, &.{"1"});
+            f.busy -= 1;
+            return &.{};
+        }
         // Callers may sort the result in place.
         return arena.dupe([]const u8, f.applied);
     }
@@ -69,7 +78,11 @@ const Result = struct {
     }
 };
 
-const Command = union(enum) { migrate, rollback: usize, status };
+const Command = union(enum) {
+    migrate: commands.migrate.Options,
+    rollback: commands.rollback.Options,
+    status,
+};
 
 /// Runs `command` in `dir` with `fake` in place of a connection.
 fn runIn(dir: Io.Dir, fake: *FakeDb, command: Command) !Result {
@@ -86,8 +99,8 @@ fn runIn(dir: Io.Dir, fake: *FakeDb, command: Command) !Result {
     const out = &r.out.writer;
     const err = &r.err.writer;
     r.code = switch (command) {
-        .migrate => try commands.migrate.migrate(env, arena, project, conn, out, err),
-        .rollback => |step| try commands.rollback.rollback(env, arena, project, conn, step, out, err),
+        .migrate => |o| try commands.migrate.migrate(env, arena, project, conn, o, out, err),
+        .rollback => |o| try commands.rollback.rollback(env, arena, project, conn, o, out, err),
         .status => try commands.status.status(arena, project, conn, out, err),
     };
     return r;
@@ -144,6 +157,8 @@ const drop_legacy = [2][]const u8{
     \\
 };
 
+const lock = "SELECT 1 WHERE pg_try_advisory_lock(439805110631);\n";
+const unlock = "SELECT pg_advisory_unlock(439805110631);\n";
 const tracking_create = "CREATE TABLE IF NOT EXISTS \"schema_migrations\" (\"version\" varchar PRIMARY KEY);\n";
 
 test "pending keeps unrecorded files in order" {
@@ -175,7 +190,7 @@ test "migrate runs each pending migration in its own transaction" {
     var fake: FakeDb = .init(&.{"20260101000000"});
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .migrate);
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
     defer r.deinit();
     try testing.expectEqualStrings("", r.err.written());
     try testing.expectEqual(0, r.code);
@@ -184,7 +199,7 @@ test "migrate runs each pending migration in its own transaction" {
         \\Migrated db/20260103000000_drop_legacy.mig
         \\
     , r.out.written());
-    try testing.expectEqualStrings(tracking_create ++
+    try testing.expectEqualStrings(lock ++ tracking_create ++
         \\BEGIN;
         \\ALTER TABLE "users" ADD COLUMN "role" integer;
         \\CREATE INDEX "index_users_on_role" ON "users" ("role");
@@ -195,7 +210,7 @@ test "migrate runs each pending migration in its own transaction" {
         \\INSERT INTO "schema_migrations" ("version") VALUES ('20260103000000');
         \\COMMIT;
         \\
-    , fake.log.written());
+    ++ unlock, fake.log.written());
 }
 
 test "migrate with nothing pending" {
@@ -204,11 +219,48 @@ test "migrate with nothing pending" {
     var fake: FakeDb = .init(&.{"20260101000000"});
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .migrate);
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
     defer r.deinit();
     try testing.expectEqual(0, r.code);
     try testing.expectEqualStrings("Nothing to migrate\n", r.out.written());
-    try testing.expectEqualStrings(tracking_create, fake.log.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
+}
+
+test "migrate waits for another run to release the lock" {
+    var tmp = try setup(&.{create_users});
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+    fake.busy = 1;
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{ .lock_wait = 5 } });
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings("Waiting for another ffmig run to finish...\n", r.err.written());
+    try testing.expectEqualStrings("Nothing to migrate\n", r.out.written());
+    try testing.expectEqualStrings(lock ++ lock ++ tracking_create ++ unlock, fake.log.written());
+}
+
+test "migrate and rollback give up when the lock stays taken" {
+    var tmp = try setup(&.{create_users});
+    defer tmp.cleanup();
+    const cases = .{
+        .{ Command{ .migrate = .{ .lock_wait = 0 } }, "ffmig: nothing was migrated\n" },
+        .{ Command{ .rollback = .{ .lock_wait = 0 } }, "ffmig: nothing was rolled back\n" },
+    };
+    inline for (cases) |c| {
+        var fake: FakeDb = .init(&.{});
+        defer fake.deinit();
+        fake.busy = 1;
+
+        var r = try runIn(tmp.dir, &fake, c[0]);
+        defer r.deinit();
+        try testing.expectEqual(1, r.code);
+        try testing.expectEqualStrings("", r.out.written());
+        try testing.expectEqualStrings("ffmig: another ffmig run holds the lock on this database; gave up after 0s (see --lock-wait)\n" ++ c[1], r.err.written());
+        // Nothing read or run, and nothing to release.
+        try testing.expectEqualStrings(lock, fake.log.written());
+    }
 }
 
 test "migrate checks every pending file before running any" {
@@ -219,7 +271,7 @@ test "migrate checks every pending file before running any" {
     var fake: FakeDb = .init(&.{});
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .migrate);
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
     defer r.deinit();
     try testing.expectEqual(1, r.code);
     try testing.expectEqualStrings("", r.out.written());
@@ -233,7 +285,7 @@ test "migrate checks every pending file before running any" {
         \\ffmig: nothing was migrated
         \\
     , r.err.written());
-    try testing.expectEqualStrings(tracking_create, fake.log.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
 }
 
 test "migrate stops at a failing statement and rolls its migration back" {
@@ -243,7 +295,7 @@ test "migrate stops at a failing statement and rolls its migration back" {
     defer fake.deinit();
     fake.fail_on = "CREATE INDEX";
 
-    var r = try runIn(tmp.dir, &fake, .migrate);
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
     defer r.deinit();
     try testing.expectEqual(1, r.code);
     try testing.expectEqualStrings("Migrated db/20260101000000_create_users.mig\n", r.out.written());
@@ -253,7 +305,7 @@ test "migrate stops at a failing statement and rolls its migration back" {
         \\CREATE INDEX "index_users_on_role" ON "users" ("role");
         \\
     , r.err.written());
-    try testing.expectEqualStrings(tracking_create ++
+    try testing.expectEqualStrings(lock ++ tracking_create ++
         \\BEGIN;
         \\CREATE TABLE "users" (
         \\  "id" bigserial PRIMARY KEY,
@@ -265,7 +317,7 @@ test "migrate stops at a failing statement and rolls its migration back" {
         \\ALTER TABLE "users" ADD COLUMN "role" integer;
         \\ROLLBACK;
         \\
-    , fake.log.written());
+    ++ unlock, fake.log.written());
 }
 
 test "rollback undoes the newest migrations with their down plans" {
@@ -274,7 +326,7 @@ test "rollback undoes the newest migrations with their down plans" {
     var fake: FakeDb = .init(&.{ "20260103000000", "20260101000000", "20260102000000" });
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .{ .rollback = 2 });
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .step = 2 } });
     defer r.deinit();
     try testing.expectEqualStrings("", r.err.written());
     try testing.expectEqual(0, r.code);
@@ -283,7 +335,7 @@ test "rollback undoes the newest migrations with their down plans" {
         \\Rolled back db/20260102000000_add_role.mig
         \\
     , r.out.written());
-    try testing.expectEqualStrings(tracking_create ++
+    try testing.expectEqualStrings(lock ++ tracking_create ++
         \\BEGIN;
         \\CREATE TABLE "legacy" (
         \\  "data" text
@@ -296,7 +348,7 @@ test "rollback undoes the newest migrations with their down plans" {
         \\DELETE FROM "schema_migrations" WHERE "version" = '20260102000000';
         \\COMMIT;
         \\
-    , fake.log.written());
+    ++ unlock, fake.log.written());
 }
 
 test "rollback stops on an irreversible change before touching the database" {
@@ -306,7 +358,7 @@ test "rollback stops on an irreversible change before touching the database" {
     var fake: FakeDb = .init(&.{ "20260101000000", "20260104000000" });
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .{ .rollback = 5 });
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .step = 5 } });
     defer r.deinit();
     try testing.expectEqual(1, r.code);
     try testing.expectEqualStrings("", r.out.written());
@@ -317,7 +369,7 @@ test "rollback stops on an irreversible change before touching the database" {
         \\ffmig: nothing was rolled back
         \\
     , r.err.written());
-    try testing.expectEqualStrings(tracking_create, fake.log.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
 }
 
 test "rollback needs the file of each migration it undoes" {
@@ -326,7 +378,7 @@ test "rollback needs the file of each migration it undoes" {
     var fake: FakeDb = .init(&.{ "20260101000000", "20260109000000" });
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .{ .rollback = 1 });
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .step = 1 } });
     defer r.deinit();
     try testing.expectEqual(1, r.code);
     try testing.expectEqualStrings(
@@ -334,7 +386,7 @@ test "rollback needs the file of each migration it undoes" {
         \\ffmig: nothing was rolled back
         \\
     , r.err.written());
-    try testing.expectEqualStrings(tracking_create, fake.log.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, fake.log.written());
 }
 
 test "rollback with nothing applied" {
@@ -343,7 +395,7 @@ test "rollback with nothing applied" {
     var fake: FakeDb = .init(&.{});
     defer fake.deinit();
 
-    var r = try runIn(tmp.dir, &fake, .{ .rollback = 1 });
+    var r = try runIn(tmp.dir, &fake, .{ .rollback = .{ .step = 1 } });
     defer r.deinit();
     try testing.expectEqual(0, r.code);
     try testing.expectEqualStrings("Nothing to roll back\n", r.out.written());
@@ -420,6 +472,26 @@ test "url scheme picks the dialect" {
     try testing.expectEqual(null, db.dialectFor("postgres:/nope"));
 }
 
+test "migrate and rollback accept their flags" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const env: Env = .{ .io = testing.io, .cwd = tmp.dir, .gpa = testing.allocator };
+    const cases = .{
+        .{ commands.migrate, &[_][]const u8{ "--lock-wait", "0" } },
+        .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "2" } },
+        .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait", "120" } },
+    };
+    inline for (cases) |c| {
+        var out: Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        var err: Writer.Allocating = .init(testing.allocator);
+        defer err.deinit();
+        // Past argument parsing: no ffmig.toml in the empty directory.
+        try testing.expectEqual(1, try c[0].run(env, c[1], &out.writer, &err.writer));
+        try testing.expectEqualStrings("ffmig: ffmig.toml not found; run 'ffmig init' first\n", err.written());
+    }
+}
+
 test "rollback and migrate reject extra arguments" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -431,6 +503,11 @@ test "rollback and migrate reject extra arguments" {
         .{ commands.rollback, &[_][]const u8{ "--step", "0" } },
         .{ commands.rollback, &[_][]const u8{ "--step", "two" } },
         .{ commands.rollback, &[_][]const u8{"3"} },
+        .{ commands.migrate, &[_][]const u8{"--lock-wait"} },
+        .{ commands.migrate, &[_][]const u8{ "--lock-wait", "-1" } },
+        .{ commands.migrate, &[_][]const u8{ "--lock-wait", "1s" } },
+        .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait" } },
+        .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "0" } },
     };
     inline for (cases) |c| {
         var out: Writer.Allocating = .init(testing.allocator);

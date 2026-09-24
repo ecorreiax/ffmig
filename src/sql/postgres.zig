@@ -1,13 +1,15 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
-//! primary keys, literals, named defaults and the database lookup.
+//! primary keys, literals, named defaults, the migration lock and the
+//! database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
 const ast = @import("../mig/ast.zig");
-const Capabilities = @import("root.zig").Capabilities;
+const root = @import("root.zig");
 
-pub const capabilities: Capabilities = .{
+pub const capabilities: root.Capabilities = .{
     .transactional_ddl = true,
+    .advisory_lock = true,
 };
 
 /// `"name"`, with embedded `"` doubled.
@@ -82,6 +84,20 @@ pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ast.ColumnType) Writer.E
     try w.writeAll(switch (n) {
         .now => "CURRENT_TIMESTAMP",
     });
+}
+
+/// Key of the advisory lock: "ffmig" in ASCII. PostgreSQL scopes advisory
+/// locks to the current database, so runs on different databases of one
+/// server never wait for each other.
+const lock_key = std.mem.readInt(u40, "ffmig", .big);
+
+/// A session-level advisory lock: it outlives each migration's
+/// transaction, and the server releases it if the connection drops.
+pub fn lock(w: *Writer, l: root.Lock) Writer.Error!void {
+    switch (l) {
+        .try_lock => try w.print("SELECT 1 WHERE pg_try_advisory_lock({d})", .{lock_key}),
+        .unlock => try w.print("SELECT pg_advisory_unlock({d})", .{lock_key}),
+    }
 }
 
 pub fn databaseExists(w: *Writer, name: []const u8) Writer.Error!void {

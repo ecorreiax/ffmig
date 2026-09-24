@@ -75,6 +75,8 @@ ffmig migrate
 
 Applied versions are recorded in a `schema_migrations` table. `migrate` checks every pending file before it runs anything, so a broken file never leaves a batch half-applied. Each migration runs in its own transaction.
 
+`migrate` and `rollback` hold a lock on the database while they run, so several deploys starting at once apply each migration exactly once: the others wait, then find nothing left to do. A run gives up after 60 seconds of waiting; `--lock-wait <seconds>` changes that, and `--lock-wait 0` does not wait at all. `status` never waits.
+
 ### Commands
 
 | Command          | Description                                            |
@@ -87,7 +89,7 @@ Applied versions are recorded in a `schema_migrations` table. `migrate` checks e
 | `new <name>`     | Create a timestamped migration file                    |
 | `check [files]`  | Check `.mig` files (`--ast`, `--down`)                 |
 | `sql <file>`     | Print the SQL for a migration (`--down` for rollback)  |
-| `migrate`        | Apply every pending migration                          |
+| `migrate`        | Apply every pending migration (`--lock-wait <s>`)      |
 | `rollback`       | Undo the last migration (`--step <n>` for more)        |
 | `status`         | List migrations as up or down                          |
 | `help`           | Show usage                                             |

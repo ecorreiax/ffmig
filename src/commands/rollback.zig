@@ -1,11 +1,11 @@
-//! `ffmig rollback [--step N]`
+//! `ffmig rollback [--step N] [--lock-wait SECONDS]`
 //!
 //! Undoes the last N applied migrations (default 1), newest first, using
 //! each one's down plan: derived for `change`, as written for `up` /
 //! `down`. Every file is parsed and its down plan derived before anything
 //! runs, so an irreversible `change` stops the rollback untouched. Each
 //! migration runs in its own transaction together with the delete of its
-//! version.
+//! version. The whole run holds the migration lock, like `migrate`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -15,10 +15,17 @@ const check = @import("check.zig");
 const migrations = @import("migrations.zig");
 const mig = @import("../mig/root.zig");
 
-pub const usage = "Usage: ffmig rollback [--step N]\n";
+pub const usage = "Usage: ffmig rollback [--step N] [--lock-wait SECONDS]\n";
+
+pub const Options = struct {
+    /// How many of the newest applied migrations to undo.
+    step: usize = 1,
+    /// Seconds to wait for another run to release the migration lock.
+    lock_wait: u32 = migrations.default_lock_wait,
+};
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
-    const step = parseArgs(args) orelse {
+    const options = parseArgs(args) orelse {
         try err.writeAll(usage);
         return 1;
     };
@@ -31,15 +38,24 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     defer project.close(env.io);
     const conn = try migrations.connect(env, arena, project.url, err) orelse return 1;
     defer conn.db.close();
-    return rollback(env, arena, project, conn, step, out, err);
+    return rollback(env, arena, project, conn, options, out, err);
 }
 
-/// The step count, or null for invalid arguments.
-fn parseArgs(args: []const []const u8) ?usize {
-    if (args.len == 0) return 1;
-    if (args.len != 2 or !std.mem.eql(u8, args[0], "--step")) return null;
-    const n = std.fmt.parseInt(usize, args[1], 10) catch return null;
-    return if (n == 0) null else n;
+/// The options, or null for invalid arguments.
+fn parseArgs(args: []const []const u8) ?Options {
+    var options: Options = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 2) {
+        if (i + 1 == args.len) return null;
+        const value = args[i + 1];
+        if (std.mem.eql(u8, args[i], "--step")) {
+            options.step = std.fmt.parseInt(usize, value, 10) catch return null;
+            if (options.step == 0) return null;
+        } else if (std.mem.eql(u8, args[i], "--lock-wait")) {
+            options.lock_wait = migrations.parseLockWait(value) orelse return null;
+        } else return null;
+    }
+    return options;
 }
 
 /// `run` after connecting, split out so tests can pass a fake database.
@@ -48,16 +64,21 @@ pub fn rollback(
     arena: Allocator,
     project: migrations.Project,
     conn: migrations.Connection,
-    step: usize,
+    options: Options,
     out: *Writer,
     err: *Writer,
 ) Writer.Error!u8 {
+    if (!try migrations.lock(env.io, arena, conn, options.lock_wait, err)) {
+        try err.writeAll("ffmig: nothing was rolled back\n");
+        return 1;
+    }
+    defer migrations.unlock(arena, conn);
     const applied = try migrations.appliedVersions(arena, conn, err) orelse return 1;
     if (applied.len == 0) {
         try out.writeAll("Nothing to roll back\n");
         return 0;
     }
-    const versions = applied[applied.len - @min(step, applied.len) ..];
+    const versions = applied[applied.len - @min(options.step, applied.len) ..];
 
     const Undo = struct { parsed: migrations.Parsed, down: []const mig.ast.Operation };
     const undos = arena.alloc(Undo, versions.len) catch {

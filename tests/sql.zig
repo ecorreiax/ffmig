@@ -71,6 +71,20 @@ test "postgres writes an empty table without id as ()" {
 
 test "capabilities" {
     try testing.expect(sql.capabilities(.postgres).transactional_ddl);
+    try testing.expect(sql.capabilities(.postgres).advisory_lock);
+}
+
+test "postgres lock statements" {
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try sql.writeLock(.postgres, .try_lock, &out.writer);
+    try out.writer.writeAll(";\n");
+    try sql.writeLock(.postgres, .unlock, &out.writer);
+    // The key is "ffmig" in ASCII.
+    try testing.expectEqualStrings(
+        \\SELECT 1 WHERE pg_try_advisory_lock(439805110631);
+        \\SELECT pg_advisory_unlock(439805110631)
+    , out.written());
 }
 
 /// Golden cases: each `<case>.mig` has a `<case>.<dialect>.sql` per

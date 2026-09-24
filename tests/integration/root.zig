@@ -70,19 +70,22 @@ const Fixture = struct {
         testing.allocator.destroy(f.arena_state);
     }
 
+    /// Runs `ffmig <args>` in the project directory. Safe to call from
+    /// several threads at once: each run makes its own connection.
+    fn run(f: *const Fixture, args: []const []const u8) !Output {
+        var o: Output = .{ .code = undefined, .out = .init(testing.allocator), .err = .init(testing.allocator) };
+        errdefer o.deinit();
+        const env: ffmig.commands.Env = .{ .io = testing.io, .cwd = f.tmp.dir, .gpa = testing.allocator, .environ = &f.environ };
+        o.code = try ffmig.cli.run(env, args, &o.out.writer, &o.err.writer);
+        return o;
+    }
+
     /// Runs `ffmig <args>` in the project directory and checks its exit
     /// code and output.
     fn expectRun(f: *Fixture, args: []const []const u8, code: u8, stdout: []const u8, stderr: []const u8) !void {
-        var out: Writer.Allocating = .init(testing.allocator);
-        defer out.deinit();
-        var err: Writer.Allocating = .init(testing.allocator);
-        defer err.deinit();
-
-        const env: ffmig.commands.Env = .{ .io = testing.io, .cwd = f.tmp.dir, .gpa = testing.allocator, .environ = &f.environ };
-        const actual = try ffmig.cli.run(env, args, &out.writer, &err.writer);
-        try testing.expectEqualStrings(stderr, err.written());
-        try testing.expectEqualStrings(stdout, out.written());
-        try testing.expectEqual(code, actual);
+        var o = try f.run(args);
+        defer o.deinit();
+        try o.expect(code, stdout, stderr);
     }
 
     /// Checks the first column of `statement`'s rows, joined with commas.
@@ -106,6 +109,24 @@ const Fixture = struct {
 
     fn expectVersions(f: *Fixture, expected: []const u8) !void {
         try f.expectQuery("SELECT version FROM schema_migrations ORDER BY version", expected);
+    }
+};
+
+/// What one `ffmig` run returned and printed.
+const Output = struct {
+    code: u8,
+    out: Writer.Allocating,
+    err: Writer.Allocating,
+
+    fn deinit(o: *Output) void {
+        o.out.deinit();
+        o.err.deinit();
+    }
+
+    fn expect(o: *Output, code: u8, stdout: []const u8, stderr: []const u8) !void {
+        try testing.expectEqualStrings(stderr, o.err.written());
+        try testing.expectEqualStrings(stdout, o.out.written());
+        try testing.expectEqual(code, o.code);
     }
 };
 
@@ -333,4 +354,88 @@ test "create, migrate, protect and drop" {
         var diag: db.Diagnostic = .{};
         try testing.expectEqual(s.rows, (try admin.query(arena, exists, &diag)).len);
     }
+}
+
+/// The advisory lock statements `migrate` and `rollback` use, for holding
+/// the lock from another connection.
+const take_lock = "SELECT pg_advisory_lock(439805110631)";
+const release_lock = "SELECT pg_advisory_unlock(439805110631)";
+
+test "migrate gives up while another run holds the lock" {
+    var f: Fixture = try .init("lock_held", &.{ create_users, add_role });
+    defer f.deinit();
+    try exec(f.conn, take_lock);
+
+    try f.expectRun(&.{ "migrate", "--lock-wait", "1" }, 1, "",
+        \\Waiting for another ffmig run to finish...
+        \\ffmig: another ffmig run holds the lock on this database; gave up after 1s (see --lock-wait)
+        \\ffmig: nothing was migrated
+        \\
+    );
+    try f.expectRun(&.{ "rollback", "--lock-wait", "0" }, 1, "",
+        \\ffmig: another ffmig run holds the lock on this database; gave up after 0s (see --lock-wait)
+        \\ffmig: nothing was rolled back
+        \\
+    );
+    // Not even the tracking table was created.
+    try f.expectQuery("SELECT count(*)::text FROM pg_tables WHERE tablename = 'schema_migrations'", "0");
+
+    try exec(f.conn, release_lock);
+    // The same key held in another database does not get in the way.
+    const host = testing.environ.getPosix("FFMIG_TEST_PGHOST").?;
+    var other = try connect(f.arena_state.allocator(), host, "postgres");
+    defer other.close();
+    try exec(other, take_lock);
+    try f.expectRun(&.{ "migrate", "--lock-wait", "0" }, 0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectVersions("20260101000000,20260102000000");
+}
+
+test "concurrent migrates apply each migration once" {
+    var f: Fixture = try .init("lock_concurrent", &.{ create_users, add_role });
+    defer f.deinit();
+
+    // A run that starts while the lock is held waits, then migrates.
+    try exec(f.conn, take_lock);
+    var waiting = try testing.io.concurrent(Fixture.run, .{ &f, &.{"migrate"} });
+    // Release once it has tried the lock at least once.
+    while (true) {
+        var diag: db.Diagnostic = .{};
+        const rows = try f.conn.query(f.arena_state.allocator(),
+            \\SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+            \\AND pid <> pg_backend_pid() AND query LIKE '%pg_try_advisory_lock%'
+        , &diag);
+        if (rows.len != 0) break;
+        try testing.io.sleep(.fromMilliseconds(10), .awake);
+    }
+    try exec(f.conn, release_lock);
+    var o = try waiting.await(testing.io);
+    defer o.deinit();
+    try o.expect(0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , "Waiting for another ffmig run to finish...\n");
+    try f.expectVersions("20260101000000,20260102000000");
+
+    // Two runs started at once: whichever takes the lock second sees
+    // what the first applied.
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_add_role.mig\n", "");
+    var a = try testing.io.concurrent(Fixture.run, .{ &f, &.{"migrate"} });
+    var b = try testing.io.concurrent(Fixture.run, .{ &f, &.{"migrate"} });
+    var ra = try a.await(testing.io);
+    defer ra.deinit();
+    var rb = try b.await(testing.io);
+    defer rb.deinit();
+    try testing.expectEqual(0, ra.code);
+    try testing.expectEqual(0, rb.code);
+    const migrated = "Migrated db/20260102000000_add_role.mig\n";
+    const nothing = "Nothing to migrate\n";
+    const first_won = std.mem.eql(u8, ra.out.written(), migrated) and std.mem.eql(u8, rb.out.written(), nothing);
+    const second_won = std.mem.eql(u8, rb.out.written(), migrated) and std.mem.eql(u8, ra.out.written(), nothing);
+    try testing.expect(first_won != second_won);
+    try f.expectVersions("20260101000000,20260102000000");
 }
