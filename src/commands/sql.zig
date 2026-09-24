@@ -9,25 +9,41 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const check = @import("check.zig");
+const flags = @import("flags.zig");
 const migrations = @import("migrations.zig");
 const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 
-pub const usage = "Usage: ffmig sql [--down] <file>\n";
+pub const usage =
+    \\Usage: ffmig sql [flags] <file>
+    \\
+    \\Print the PostgreSQL for a migration's up plan. Nothing touches a
+    \\database.
+    \\
+    \\Flags:
+    \\  --down           Print the down plan instead
+    \\
+++ flags.help_option;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     var down = false;
     var file: ?[]const u8 = null;
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--down")) {
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.isSwitch("--down")) {
             down = true;
-        } else if (std.mem.startsWith(u8, arg, "--") or file != null) {
+        } else {
             try err.writeAll(usage);
             return 1;
-        } else {
-            file = arg;
-        }
-    }
+        },
+        .positional => |p| {
+            if (file != null) {
+                try err.writeAll(usage);
+                return 1;
+            }
+            file = p;
+        },
+    };
     const path = file orelse {
         try err.writeAll(usage);
         return 1;

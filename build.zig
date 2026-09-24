@@ -1,4 +1,5 @@
 const std = @import("std");
+const manifest = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -12,6 +13,10 @@ pub fn build(b: *std.Build) void {
     // The PostgreSQL driver (`src/db/postgres.zig`); found through
     // pkg-config, which the nix dev shell sets up.
     mod.linkSystemLibrary("pq", .{});
+    // `ffmig --version` prints the version from `build.zig.zon`.
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", manifest.version);
+    mod.addOptions("build_options", options);
 
     const exe = b.addExecutable(.{
         .name = "ffmig",

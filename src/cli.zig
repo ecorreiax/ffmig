@@ -1,40 +1,40 @@
 //! Command-line router. Takes already-split arguments and writers so it
 //! stays independent of the process and is easy to test.
+//!
+//! It answers `help`, `version` and every `--help` itself, and reads the
+//! flags that several commands share (`commands.Globals`) into
+//! `commands.Env`, so each command parses only its own.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
 const commands = @import("commands/root.zig");
+const flags = commands.flags;
+const version = @import("build_options").version;
 
 pub const usage =
-    \\Usage: ffmig <command> [args]
+    \\Usage: ffmig <command> [flags]
     \\
     \\Commands:
-    \\  init           Create ffmig.toml and the migrations directory
-    \\                   --path <dir>  Migrations directory (default: migrations)
-    \\                   --url <url>   Database URL (default: ${DATABASE_URL})
-    \\  create         Create the database named by the database url
-    \\  drop           Drop that database, schema_migrations included, after
-    \\                 asking for its name
-    \\                   --force       Do not ask (still refused if protected)
-    \\  protect        Mark the database so that drop refuses it
-    \\  unprotect      Remove that mark
-    \\  new <name>     Create a timestamped migration file, e.g. new create_users
-    \\  check [files]  Check .mig files (default: all in the migrations directory)
-    \\                   --ast         Print the parsed migration
-    \\                   --down        Print it as up / down, deriving down for change
-    \\  sql <file>     Print the PostgreSQL for a migration's up plan
-    \\                   --down        Print the down plan instead
-    \\  migrate        Apply every pending migration
-    \\                   --lock-wait <s>  Wait up to s seconds for another run
-    \\                                    to finish (default: 60)
-    \\                   --strict         Refuse to run if an applied file
-    \\                                    has changed since it ran
-    \\  rollback       Undo the last applied migration
-    \\                   --step <n>       Undo the last n instead
-    \\                   --lock-wait <s>  As for migrate
-    \\  status         List migrations as up or down, with when each ran
-    \\                 and whether its file has changed since
-    \\  help           Show this message
+    \\  init            Create ffmig.toml and the migrations directory
+    \\  create          Create the database named by the database url
+    \\  drop            Drop that database, schema_migrations included,
+    \\                  after asking for its name
+    \\  protect         Mark the database so that drop refuses it
+    \\  unprotect       Remove that mark
+    \\  new <name>      Create a timestamped migration file
+    \\  check [files]   Check .mig files (default: all of them)
+    \\  sql <file>      Print the PostgreSQL for a migration
+    \\  migrate         Apply every pending migration
+    \\  rollback        Undo the last applied migration
+    \\  status          List migrations as up or down, with when each ran
+    \\  help [command]  Show this message, or a command's flags
+    \\  version         Print the version
+    \\
+    \\Commands that read the config also take:
+    \\
+++ flags.config_option ++ flags.url_option ++
+    \\
+    \\Run 'ffmig help <command>' or 'ffmig <command> --help' for its flags.
     \\
 ;
 
@@ -44,17 +44,82 @@ pub fn run(env: commands.Env, args: []const []const u8, out: *Writer, err: *Writ
         return 1;
     }
 
-    const command = std.meta.stringToEnum(commands.Command, args[0]) orelse {
-        try err.print("ffmig: unknown command '{s}'\n\n", .{args[0]});
-        try err.writeAll(usage);
-        return 1;
-    };
+    const command: commands.Command = if (flags.isHelp(args[0]))
+        .help
+    else if (std.mem.eql(u8, args[0], "--version"))
+        .version
+    else
+        try parseCommand(args[0], err) orelse return 1;
+    const rest = args[1..];
 
-    return switch (command) {
-        .help => {
-            try out.writeAll(usage);
+    if (flags.wantsHelp(rest)) {
+        try out.writeAll(commands.usage(command));
+        return 0;
+    }
+    switch (command) {
+        .help => return help(rest, out, err),
+        .version => {
+            if (rest.len != 0) {
+                try err.writeAll(commands.version_usage);
+                return 1;
+            }
+            try out.print("ffmig {s}\n", .{version});
             return 0;
         },
-        else => commands.run(env, command, args[1..], out, err),
+        else => {},
+    }
+
+    const globals: commands.Globals = .of(command);
+    if (!globals.config and !globals.url) return commands.run(env, command, rest, out, err);
+
+    // The command's own arguments, in order, without the shared flags.
+    var own: std.ArrayList([]const u8) = .empty;
+    defer own.deinit(env.gpa);
+    var command_env = env;
+    var it: flags.Iterator = .{ .args = rest };
+    while (it.next()) |arg| {
+        if (arg == .flag) {
+            const f = arg.flag;
+            if (globals.config and f.is("--config")) {
+                command_env.config = it.value(f) orelse return badArguments(command, err);
+                continue;
+            }
+            if (globals.url and f.is("--url")) {
+                command_env.url = it.value(f) orelse return badArguments(command, err);
+                continue;
+            }
+        }
+        own.append(env.gpa, it.raw()) catch {
+            try err.writeAll("ffmig: out of memory\n");
+            return 1;
+        };
+    }
+    return commands.run(command_env, command, own.items, out, err);
+}
+
+/// `ffmig help [command]`, also reached as `ffmig -h [command]`.
+fn help(args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
+    switch (args.len) {
+        0 => try out.writeAll(usage),
+        1 => try out.writeAll(commands.usage(try parseCommand(args[0], err) orelse return 1)),
+        else => {
+            try err.writeAll(commands.help_usage);
+            return 1;
+        },
+    }
+    return 0;
+}
+
+/// The command called `name`, or null after reporting that there is none.
+fn parseCommand(name: []const u8, err: *Writer) Writer.Error!?commands.Command {
+    return std.meta.stringToEnum(commands.Command, name) orelse {
+        try err.print("ffmig: unknown command '{s}'\n\n", .{name});
+        try err.writeAll(usage);
+        return null;
     };
+}
+
+fn badArguments(command: commands.Command, err: *Writer) Writer.Error!u8 {
+    try err.writeAll(commands.usage(command));
+    return 1;
 }

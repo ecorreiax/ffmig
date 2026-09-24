@@ -20,9 +20,21 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 const sql = @import("../sql/root.zig");
 
-pub const usage = "Usage: ffmig migrate [--lock-wait SECONDS] [--strict]\n";
+pub const usage =
+    \\Usage: ffmig migrate [flags]
+    \\
+    \\Apply every pending migration, oldest first.
+    \\
+    \\Flags:
+    \\  --lock-wait <s>  Wait up to s seconds for another migrate or
+    \\                   rollback to finish (default: 60; 0: do not wait)
+    \\  --strict         Refuse to run if an applied file has changed
+    \\                   since it ran
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub const Options = struct {
     /// Seconds to wait for another run to release the migration lock.
@@ -51,16 +63,15 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 /// The options, or null for invalid arguments.
 fn parseArgs(args: []const []const u8) ?Options {
     var options: Options = .{};
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--strict")) {
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.isSwitch("--strict")) {
             options.strict = true;
-        } else if (std.mem.eql(u8, args[i], "--lock-wait")) {
-            i += 1;
-            if (i == args.len) return null;
-            options.lock_wait = migrations.parseLockWait(args[i]) orelse return null;
-        } else return null;
-    }
+        } else if (f.is("--lock-wait")) {
+            options.lock_wait = migrations.parseLockWait(it.value(f) orelse return null) orelse return null;
+        } else return null,
+        .positional => return null,
+    };
     return options;
 }
 

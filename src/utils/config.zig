@@ -49,8 +49,10 @@ pub const ParseError = error{ InvalidSyntax, InvalidTimeout, OutOfMemory };
 
 pub const LoadError = ParseError || Io.Dir.ReadFileAllocError;
 
-pub fn load(io: Io, dir: Io.Dir, gpa: Allocator, diag: *Diagnostics) LoadError!Config {
-    const source = try dir.readFileAlloc(io, file_name, gpa, .limited(1024 * 1024));
+/// Reads the config file at `path` in `dir`. Its `path` is left as
+/// written, relative to the config file; see `resolvePath`.
+pub fn load(io: Io, dir: Io.Dir, path: []const u8, gpa: Allocator, diag: *Diagnostics) LoadError!Config {
+    const source = try dir.readFileAlloc(io, path, gpa, .limited(1024 * 1024));
     defer gpa.free(source);
     return parse(gpa, source, diag);
 }
@@ -108,6 +110,14 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
         .url = url,
         .timeouts = timeouts,
     };
+}
+
+/// `path`, which the config file at `config_path` gives relative to
+/// itself, relative to the directory `config_path` is relative to.
+pub fn resolvePath(gpa: Allocator, config_path: []const u8, path: []const u8) Allocator.Error![]const u8 {
+    const dir = std.fs.path.dirname(config_path) orelse return gpa.dupe(u8, path);
+    if (std.fs.path.isAbsolute(path)) return gpa.dupe(u8, path);
+    return std.fs.path.join(gpa, &.{ dir, path });
 }
 
 /// The field of `t` that `key` sets, and `key` itself with a lifetime

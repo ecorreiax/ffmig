@@ -1,6 +1,6 @@
 //! `ffmig drop [--force]`
 //!
-//! Drops the database that the url in `ffmig.toml` names, taking every
+//! Drops the database that the database url names, taking every
 //! table with it, `schema_migrations` included, so the next `create` and
 //! `migrate` start from nothing. Connects to the server's maintenance
 //! database to do it. A missing database is not an error.
@@ -18,8 +18,19 @@ const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
 const database = @import("database.zig");
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 
-pub const usage = "Usage: ffmig drop [--force]\n";
+pub const usage =
+    \\Usage: ffmig drop [flags]
+    \\
+    \\Drop the database that the database url names, schema_migrations
+    \\included, after asking for its name. A protected database is
+    \\refused.
+    \\
+    \\Flags:
+    \\  --force          Do not ask; needed where nobody can answer
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub const Options = struct {
     /// Skip the confirmation prompt. Does not override `ffmig protect`.
@@ -43,9 +54,15 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
 /// The options, or null for invalid arguments.
 fn parseArgs(args: []const []const u8) ?Options {
-    if (args.len == 0) return .{};
-    if (args.len == 1 and std.mem.eql(u8, args[0], "--force")) return .{ .force = true };
-    return null;
+    var options: Options = .{};
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.isSwitch("--force")) {
+            options.force = true;
+        } else return null,
+        .positional => return null,
+    };
+    return options;
 }
 
 /// `run` after connecting, split out so tests can pass a fake database

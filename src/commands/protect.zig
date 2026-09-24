@@ -1,6 +1,6 @@
 //! `ffmig protect`
 //!
-//! Marks the database that the url in `ffmig.toml` names so that `drop`
+//! Marks the database that the database url names so that `drop`
 //! refuses it, even with `--force`, until `ffmig unprotect`. The mark lives
 //! in the database server's catalog, so no config or environment variable
 //! can bypass it.
@@ -11,10 +11,19 @@ const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const database = @import("database.zig");
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 const sql = @import("../sql/root.zig");
 const unprotect = @import("unprotect.zig");
 
-pub const usage = "Usage: ffmig protect\n";
+pub const usage =
+    \\Usage: ffmig protect [flags]
+    \\
+    \\Mark the database that the database url names so that drop refuses
+    \\it, even with --force, until 'ffmig unprotect'.
+    \\
+    \\Flags:
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     return runWith(env, args, true, out, err);

@@ -776,7 +776,7 @@ test "connect reports url problems without connecting" {
     try environ.put("MYSQL_URL", "mysql://localhost/app");
     try environ.put("EMPTY", "");
 
-    try expectConnectError(null, &environ, "ffmig: no database url in ffmig.toml; set [database] url\n");
+    try expectConnectError(null, &environ, "ffmig: no database url; set [database] url in ffmig.toml or FFMIG_DATABASE_URL, or pass --url\n");
     try expectConnectError("${DATABASE_URL}", &environ, "ffmig: DATABASE_URL is not set (used by the database url in ffmig.toml)\n");
     try expectConnectError("${DATABASE_URL}", null, "ffmig: DATABASE_URL is not set (used by the database url in ffmig.toml)\n");
     try expectConnectError("${EMPTY}", &environ, "ffmig: the database url in ffmig.toml is empty\n");

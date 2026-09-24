@@ -169,18 +169,25 @@ pub fn checksum(source: []const u8) Checksum {
     return std.fmt.bytesToHex(h.finalResult(), .lower);
 }
 
-/// Loads `ffmig.toml`, reporting problems to `err` and returning null.
+/// Loads the config file (`ffmig.toml` or `--config`), reporting
+/// problems to `err` and returning null. Its `path` comes back relative
+/// to `env.cwd`, not to the config file.
 pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config.Config {
     var diag: config.Diagnostics = .{};
-    return config.load(env.io, env.cwd, arena, &diag) catch |e| {
+    var cfg = config.load(env.io, env.cwd, env.config, arena, &diag) catch |e| {
         switch (e) {
-            error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
-            error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
-            error.InvalidTimeout => try err.print("ffmig: {s}:{d}: {s} must be a duration such as \"5s\" or \"500ms\", or \"0\" for no limit\n", .{ config.file_name, diag.line, diag.key }),
-            else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
+            error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{env.config}),
+            error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ env.config, diag.line }),
+            error.InvalidTimeout => try err.print("ffmig: {s}:{d}: {s} must be a duration such as \"5s\" or \"500ms\", or \"0\" for no limit\n", .{ env.config, diag.line, diag.key }),
+            else => try err.print("ffmig: cannot read {s}: {t}\n", .{ env.config, e }),
         }
         return null;
     };
+    cfg.path = config.resolvePath(arena, env.config, cfg.path) catch {
+        try outOfMemory(err);
+        return null;
+    };
+    return cfg;
 }
 
 /// A migration file after parsing, with what error reports need.
@@ -219,48 +226,72 @@ fn orderVersion(key: []const u8, item: Applied) std.math.Order {
 
 pub const Connection = struct { db: db.Db, dialect: db.Dialect };
 
-/// Expands `${VAR}`s in `url` from the environment and connects. Reports
-/// problems to `err` and returns null. Never prints the URL, which may
-/// hold a password.
-pub fn connect(env: Env, arena: Allocator, url: ?[]const u8, err: *Writer) Writer.Error!?Connection {
-    const resolved = try resolveUrl(env, arena, url, err) orelse return null;
+/// Picks the database URL and connects. Reports problems to `err` and
+/// returns null. Never prints the URL, which may hold a password.
+pub fn connect(env: Env, arena: Allocator, configured: ?[]const u8, err: *Writer) Writer.Error!?Connection {
+    const resolved = try resolveUrl(env, arena, configured, err) orelse return null;
     return open(arena, resolved, err);
 }
 
+/// The environment variable that overrides the config's database URL.
+pub const url_variable = "FFMIG_DATABASE_URL";
+
 /// A database URL after `${VAR}` expansion, with the dialect its scheme
 /// selects.
-pub const Url = struct { url: []const u8, dialect: db.Dialect };
+pub const Url = struct {
+    url: []const u8,
+    dialect: db.Dialect,
+    /// Where the URL came from, for messages: `--url`, the variable or
+    /// the config file.
+    from: []const u8,
+};
 
-/// The first half of `connect`: expands `url` and picks its dialect.
-pub fn resolveUrl(env: Env, arena: Allocator, url: ?[]const u8, err: *Writer) Writer.Error!?Url {
-    const raw = url orelse {
-        try err.print("ffmig: no database url in {s}; set [database] url\n", .{config.file_name});
-        return null;
-    };
+/// The first half of `connect`: picks the URL, from `--url`, else a
+/// non-empty `FFMIG_DATABASE_URL`, else `configured` (the config's) with
+/// its `${VAR}`s expanded, and picks its dialect. The overrides are
+/// taken as given.
+pub fn resolveUrl(env: Env, arena: Allocator, configured: ?[]const u8, err: *Writer) Writer.Error!?Url {
     const empty: std.process.Environ.Map = .init(arena);
-    var missing: []const u8 = "";
-    const expanded = config.expandEnv(arena, raw, env.environ orelse &empty, &missing) catch |e| {
-        switch (e) {
-            error.OutOfMemory => try outOfMemory(err),
-            error.UndefinedVariable => try err.print("ffmig: {s} is not set (used by the database url in {s})\n", .{ missing, config.file_name }),
-            error.InvalidSyntax => try err.print("ffmig: database url in {s}: unterminated or empty ${{...}}\n", .{config.file_name}),
+    const environ = env.environ orelse &empty;
+    const url: []const u8, const from: []const u8 = if (env.url) |u|
+        .{ u, "--url" }
+    else if (nonEmpty(environ.get(url_variable))) |u|
+        .{ u, url_variable }
+    else from_config: {
+        const raw = configured orelse {
+            try err.print("ffmig: no database url; set [database] url in {s} or {s}, or pass --url\n", .{ env.config, url_variable });
+            return null;
+        };
+        var missing: []const u8 = "";
+        const expanded = config.expandEnv(arena, raw, environ, &missing) catch |e| {
+            switch (e) {
+                error.OutOfMemory => try outOfMemory(err),
+                error.UndefinedVariable => try err.print("ffmig: {s} is not set (used by the database url in {s})\n", .{ missing, env.config }),
+                error.InvalidSyntax => try err.print("ffmig: database url in {s}: unterminated or empty ${{...}}\n", .{env.config}),
+            }
+            return null;
+        };
+        if (expanded.len == 0) {
+            try err.print("ffmig: the database url in {s} is empty\n", .{env.config});
+            return null;
         }
-        return null;
+        break :from_config .{ expanded, env.config };
     };
-    if (expanded.len == 0) {
-        try err.print("ffmig: the database url in {s} is empty\n", .{config.file_name});
-        return null;
-    }
-    const dialect = db.dialectFor(expanded) orelse {
-        const scheme_end = std.mem.indexOf(u8, expanded, "://") orelse 0;
+    const dialect = db.dialectFor(url) orelse {
+        const scheme_end = std.mem.indexOf(u8, url, "://") orelse 0;
         if (scheme_end == 0) {
             try err.writeAll("ffmig: the database url must start with a scheme such as postgres://\n");
         } else {
-            try err.print("ffmig: unsupported database '{s}'; supported: postgres\n", .{expanded[0..scheme_end]});
+            try err.print("ffmig: unsupported database '{s}'; supported: postgres\n", .{url[0..scheme_end]});
         }
         return null;
     };
-    return .{ .url = expanded, .dialect = dialect };
+    return .{ .url = url, .dialect = dialect, .from = from };
+}
+
+fn nonEmpty(s: ?[]const u8) ?[]const u8 {
+    const v = s orelse return null;
+    return if (v.len == 0) null else v;
 }
 
 /// The second half of `connect`.

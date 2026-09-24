@@ -282,5 +282,5 @@ test "create needs a database name in the url" {
     var err: Writer.Allocating = .init(testing.allocator);
     defer err.deinit();
     try testing.expectEqual(1, try commands.create.run(env, &.{}, &out.writer, &err.writer));
-    try testing.expectEqualStrings("ffmig: the database url in ffmig.toml must name a database in its path, e.g. postgres://localhost/app_dev\n", err.written());
+    try testing.expectEqualStrings("ffmig: the database url from ffmig.toml must name a database in its path, e.g. postgres://localhost/app_dev\n", err.written());
 }

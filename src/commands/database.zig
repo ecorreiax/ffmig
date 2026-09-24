@@ -1,5 +1,5 @@
 //! What `create`, `drop`, `protect` and `unprotect` share: finding the
-//! database that `ffmig.toml` names and connecting to the maintenance
+//! database that the database url names and connecting to the maintenance
 //! database to act on it, since `create` and `drop` cannot run while
 //! connected to the database itself.
 
@@ -7,7 +7,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
-const config = @import("../utils/config.zig");
 const migrations = @import("migrations.zig");
 const sql = @import("../sql/root.zig");
 const db = @import("../db/root.zig");
@@ -19,7 +18,7 @@ pub const Target = struct {
     conn: migrations.Connection,
 };
 
-/// Loads `ffmig.toml` and connects to the maintenance database. Reports
+/// Loads the config and connects to the maintenance database. Reports
 /// problems to `err` and returns null.
 pub fn connect(env: Env, arena: Allocator, err: *Writer) Writer.Error!?Target {
     const cfg = try migrations.loadConfig(env, arena, err) orelse return null;
@@ -27,11 +26,11 @@ pub fn connect(env: Env, arena: Allocator, err: *Writer) Writer.Error!?Target {
     const admin = db.admin(arena, url.dialect, url.url) catch |e| {
         switch (e) {
             error.OutOfMemory => try migrations.outOfMemory(err),
-            error.NoDatabaseName => try err.print("ffmig: the database url in {s} must name a database in its path, e.g. postgres://localhost/app_dev\n", .{config.file_name}),
+            error.NoDatabaseName => try err.print("ffmig: the database url from {s} must name a database in its path, e.g. postgres://localhost/app_dev\n", .{url.from}),
         }
         return null;
     };
-    const conn = try migrations.open(arena, .{ .url = admin.url, .dialect = url.dialect }, err) orelse return null;
+    const conn = try migrations.open(arena, .{ .url = admin.url, .dialect = url.dialect, .from = url.from }, err) orelse return null;
     return .{ .name = admin.database, .conn = conn };
 }
 

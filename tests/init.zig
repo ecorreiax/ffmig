@@ -3,7 +3,6 @@ const Io = std.Io;
 const Writer = Io.Writer;
 const ffmig = @import("ffmig");
 const init = ffmig.commands.init;
-const run = init.run;
 const usage = init.usage;
 const config_file = ffmig.config.file_name;
 
@@ -20,13 +19,18 @@ const Result = struct {
     }
 };
 
+/// Runs `ffmig init <args>` through the CLI router, which reads `--url`
+/// and `--config` for it.
 fn runIn(dir: Io.Dir, args: []const []const u8) !Result {
     var r: Result = .{
         .code = undefined,
         .out = .init(testing.allocator),
         .err = .init(testing.allocator),
     };
-    r.code = try run(.{ .io = testing.io, .cwd = dir, .gpa = testing.allocator }, args, &r.out.writer, &r.err.writer);
+    errdefer r.deinit();
+    const argv = try std.mem.concat(testing.allocator, []const u8, &.{ &.{"init"}, args });
+    defer testing.allocator.free(argv);
+    r.code = try ffmig.cli.run(.{ .io = testing.io, .cwd = dir, .gpa = testing.allocator }, argv, &r.out.writer, &r.err.writer);
     return r;
 }
 
@@ -154,4 +158,20 @@ test "init rejects bad arguments" {
         try testing.expectEqual(1, r.code);
         try testing.expectEqualStrings(usage, r.err.written());
     }
+}
+
+test "init --config writes that file, the migrations directory beside it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var r = try runIn(tmp.dir, &.{ "--config", "config/app.toml", "--path", "db" });
+    defer r.deinit();
+
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings("Created config/app.toml\nCreated config/db/\n", r.out.written());
+    try testing.expectEqualStrings("", r.err.written());
+    const written = try tmp.dir.readFileAlloc(testing.io, "config/app.toml", testing.allocator, .unlimited);
+    defer testing.allocator.free(written);
+    try testing.expect(std.mem.startsWith(u8, written, "[migration]\npath = \"db\"\n"));
+    try tmp.dir.access(testing.io, "config/db", .{});
 }

@@ -8,3 +8,6 @@ pub const config = @import("utils/config.zig");
 pub const fs = @import("utils/fs.zig");
 pub const mig = @import("mig/root.zig");
 pub const sql = @import("sql/root.zig");
+
+/// From `build.zig.zon`.
+pub const version = @import("build_options").version;

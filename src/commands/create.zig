@@ -1,6 +1,6 @@
 //! `ffmig create`
 //!
-//! Creates the database that the url in `ffmig.toml` names, connecting to
+//! Creates the database that the database url names, connecting to
 //! the server's maintenance database to do it. An existing database is
 //! left alone.
 
@@ -10,8 +10,16 @@ const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const database = @import("database.zig");
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 
-pub const usage = "Usage: ffmig create\n";
+pub const usage =
+    \\Usage: ffmig create [flags]
+    \\
+    \\Create the database that the database url names, unless it exists.
+    \\
+    \\Flags:
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     if (args.len != 0) {

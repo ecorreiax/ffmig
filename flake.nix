@@ -11,11 +11,13 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         zig = pkgs.zig;
+        # Read from build.zig.zon, which `ffmig --version` prints too.
+        version = builtins.head (builtins.match ''.*[.]version = "([^"]+)".*'' (builtins.readFile ./build.zig.zon));
       in
       {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "ffmig";
-          version = "0.1.0";
+          inherit version;
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [ ./build.zig ./build.zig.zon ./src ];

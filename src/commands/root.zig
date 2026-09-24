@@ -1,5 +1,6 @@
 //! Command registry. Each command lives in its own file and exposes
-//! `run(env, args, out, err)`; add new ones to `Command` and `run` below.
+//! `run(env, args, out, err)` and a `usage` text listing its flags; add
+//! new ones to `Command`, `run`, `usage` and `Globals.of` below.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -19,6 +20,8 @@ pub const protect = @import("protect.zig");
 pub const unprotect = @import("unprotect.zig");
 pub const database = @import("database.zig");
 pub const migrations = @import("migrations.zig");
+pub const flags = @import("flags.zig");
+const config = @import("../utils/config.zig");
 
 /// Process resources a command may need, injected so tests can point
 /// commands at a temporary directory.
@@ -33,6 +36,11 @@ pub const Env = struct {
     /// Null means nobody can answer, so commands that need confirmation
     /// refuse unless forced.
     stdin: ?*Io.Reader = null,
+    /// `--config`: the config file, relative to `cwd`.
+    config: []const u8 = config.file_name,
+    /// `--url`: the database URL, which beats `FFMIG_DATABASE_URL` and
+    /// the config's. `init` writes it to the config instead.
+    url: ?[]const u8 = null,
 };
 
 pub const Command = enum {
@@ -48,10 +56,62 @@ pub const Command = enum {
     rollback,
     status,
     help,
+    version,
 };
 
-/// Runs `command` with the arguments that follow it. `help` is handled by
-/// the CLI router since it needs the top-level usage text.
+/// Which of the flags `--config` and `--url` the CLI router reads into
+/// `Env` for a command, before the command sees its arguments. A command
+/// that takes neither rejects them like any unknown flag.
+pub const Globals = struct {
+    config: bool = false,
+    url: bool = false,
+
+    pub fn of(command: Command) Globals {
+        return switch (command) {
+            .init, .create, .drop, .protect, .unprotect, .migrate, .rollback, .status => .{ .config = true, .url = true },
+            .new, .check => .{ .config = true },
+            .sql, .help, .version => .{},
+        };
+    }
+};
+
+pub const help_usage =
+    \\Usage: ffmig help [command]
+    \\
+    \\Show the commands, or one command's usage and flags. So does
+    \\'ffmig <command> --help'.
+    \\
+;
+
+pub const version_usage =
+    \\Usage: ffmig version
+    \\
+    \\Print the version of ffmig. So does 'ffmig --version'.
+    \\
+;
+
+/// The usage text of `command`, listing its flags.
+pub fn usage(command: Command) []const u8 {
+    return switch (command) {
+        .init => init.usage,
+        .create => create.usage,
+        .drop => drop.usage,
+        .protect => protect.usage,
+        .unprotect => unprotect.usage,
+        .new => new.usage,
+        .check => check.usage,
+        .sql => sql.usage,
+        .migrate => migrate.usage,
+        .rollback => rollback.usage,
+        .status => status.usage,
+        .help => help_usage,
+        .version => version_usage,
+    };
+}
+
+/// Runs `command` with the arguments that follow it. `help` and
+/// `version` are handled by the CLI router, which holds the top-level
+/// usage text and the version.
 pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     return switch (command) {
         .init => init.run(env, args, out, err),
@@ -65,6 +125,6 @@ pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, e
         .migrate => migrate.run(env, args, out, err),
         .rollback => rollback.run(env, args, out, err),
         .status => status.run(env, args, out, err),
-        .help => unreachable,
+        .help, .version => unreachable,
     };
 }

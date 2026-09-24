@@ -12,11 +12,22 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
-const config = @import("../utils/config.zig");
+const flags = @import("flags.zig");
+const migrations = @import("migrations.zig");
 const fs = @import("../utils/fs.zig");
 const mig = @import("../mig/root.zig");
 
-pub const usage = "Usage: ffmig check [--ast] [--down] [file...]\n";
+pub const usage =
+    \\Usage: ffmig check [flags] [file...]
+    \\
+    \\Check .mig files, by default every one in the migrations directory,
+    \\and report the first error in each.
+    \\
+    \\Flags:
+    \\  --ast            Print each parsed migration
+    \\  --down           Print it as up / down, deriving down for change
+    \\
+++ flags.config_option ++ flags.help_option;
 
 const Options = struct {
     /// Print the lowered AST.
@@ -33,31 +44,24 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     var opts: Options = .{};
     var files: std.ArrayList([]const u8) = .empty;
     defer files.deinit(env.gpa);
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--ast")) {
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.isSwitch("--ast")) {
             opts.ast = true;
-        } else if (std.mem.eql(u8, arg, "--down")) {
+        } else if (f.isSwitch("--down")) {
             opts.down = true;
-        } else if (std.mem.startsWith(u8, arg, "--")) {
+        } else {
             try err.writeAll(usage);
             return 1;
-        } else {
-            files.append(env.gpa, arg) catch return outOfMemory(err);
-        }
-    }
+        },
+        .positional => |file| files.append(env.gpa, file) catch return outOfMemory(err),
+    };
 
     if (files.items.len > 0) return checkFiles(env, env.cwd, "", files.items, opts, out, err);
 
-    var diag: config.Diagnostics = .{};
-    const cfg = config.load(env.io, env.cwd, env.gpa, &diag) catch |e| {
-        switch (e) {
-            error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
-            error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
-            else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
-        }
-        return 1;
-    };
-    defer cfg.deinit(env.gpa);
+    var arena_state: std.heap.ArenaAllocator = .init(env.gpa);
+    defer arena_state.deinit();
+    const cfg = try migrations.loadConfig(env, arena_state.allocator(), err) orelse return 1;
 
     var dir = env.cwd.openDir(env.io, cfg.path, .{ .iterate = true }) catch |e| {
         try err.print("ffmig: cannot open directory {s}: {t}\n", .{ cfg.path, e });
@@ -65,8 +69,6 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     };
     defer dir.close(env.io);
 
-    var arena_state: std.heap.ArenaAllocator = .init(env.gpa);
-    defer arena_state.deinit();
     const names = fs.listMigrations(env.io, dir, arena_state.allocator()) catch |e| switch (e) {
         error.OutOfMemory => return outOfMemory(err),
         else => {

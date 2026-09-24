@@ -1,18 +1,31 @@
-//! `ffmig init [--path <dir>] [--url <url>]`
+//! `ffmig init [--path <dir>] [--url <url>] [--config <path>]`
 //!
-//! Writes `ffmig.toml` to the working directory and creates the migrations
-//! directory. Refuses to overwrite an existing config. The config shows
-//! `lock_timeout` commented out.
+//! Writes `ffmig.toml` (or the `--config` file) and creates the migrations
+//! directory, which the config names relative to itself. Refuses to
+//! overwrite an existing config. The config shows `lock_timeout`
+//! commented out. `--url` and `--config` reach it through `Env`, read by
+//! the CLI router as for the other commands.
 
 const std = @import("std");
 const Io = std.Io;
 const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
 const config = @import("../utils/config.zig");
+const flags = @import("flags.zig");
 
-pub const usage = "Usage: ffmig init [--path <dir>] [--url <url>]\n";
+pub const usage =
+    \\Usage: ffmig init [flags]
+    \\
+    \\Create ffmig.toml and the migrations directory.
+    \\
+    \\Flags:
+    \\  --path <dir>     Migrations directory, relative to the config
+    \\                   (default: migrations)
+    \\  --url <url>      Database URL to write (default: ${DATABASE_URL})
+    \\  --config <path>  Config file to create (default: ffmig.toml)
+    \\
+++ flags.help_option;
 
-const config_file = config.file_name;
 const default_path = config.default_path;
 pub const default_url = "${DATABASE_URL}";
 
@@ -31,10 +44,12 @@ const Options = struct {
 };
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
-    const opts = parseArgs(args) orelse {
+    var opts = parseArgs(args) orelse {
         try err.writeAll(usage);
         return 1;
     };
+    if (env.url) |url| opts.url = url;
+    const config_file = env.config;
 
     var buffer: [4096]u8 = undefined;
     var rendered: Writer = .fixed(&buffer);
@@ -43,6 +58,10 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
         return 1;
     };
 
+    if (std.fs.path.dirname(config_file)) |dir| env.cwd.createDirPath(env.io, dir) catch |e| {
+        try err.print("ffmig: cannot create directory {s}: {t}\n", .{ dir, e });
+        return 1;
+    };
     env.cwd.writeFile(env.io, .{
         .sub_path = config_file,
         .data = rendered.buffered(),
@@ -59,42 +78,31 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
     };
     try out.print("Created {s}\n", .{config_file});
 
-    const existed = if (env.cwd.access(env.io, opts.path, .{})) true else |_| false;
-    env.cwd.createDirPath(env.io, opts.path) catch |e| {
-        try err.print("ffmig: cannot create directory {s}: {t}\n", .{ opts.path, e });
+    const path = config.resolvePath(env.gpa, config_file, opts.path) catch {
+        try err.writeAll("ffmig: out of memory\n");
         return 1;
     };
-    if (!existed) try out.print("Created {s}/\n", .{opts.path});
+    defer env.gpa.free(path);
+    const existed = if (env.cwd.access(env.io, path, .{})) true else |_| false;
+    env.cwd.createDirPath(env.io, path) catch |e| {
+        try err.print("ffmig: cannot create directory {s}: {t}\n", .{ path, e });
+        return 1;
+    };
+    if (!existed) try out.print("Created {s}/\n", .{path});
 
     return 0;
 }
 
-/// Accepts `--flag value` and `--flag=value`. Returns null on bad input.
+/// The options, or null for invalid arguments.
 fn parseArgs(args: []const []const u8) ?Options {
     var opts: Options = .{};
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        const name, const inline_value = if (std.mem.indexOfScalar(u8, arg, '=')) |eq|
-            .{ arg[0..eq], @as(?[]const u8, arg[eq + 1 ..]) }
-        else
-            .{ arg, @as(?[]const u8, null) };
-
-        const slot = if (std.mem.eql(u8, name, "--path"))
-            &opts.path
-        else if (std.mem.eql(u8, name, "--url"))
-            &opts.url
-        else
-            return null;
-
-        const value = inline_value orelse blk: {
-            i += 1;
-            if (i == args.len) return null;
-            break :blk args[i];
-        };
-        if (value.len == 0) return null;
-        slot.* = value;
-    }
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.is("--path")) {
+            opts.path = it.value(f) orelse return null;
+        } else return null,
+        .positional => return null,
+    };
     return opts;
 }
 

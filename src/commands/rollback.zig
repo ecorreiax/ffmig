@@ -14,9 +14,20 @@ const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const check = @import("check.zig");
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 const mig = @import("../mig/root.zig");
 
-pub const usage = "Usage: ffmig rollback [--step N] [--lock-wait SECONDS]\n";
+pub const usage =
+    \\Usage: ffmig rollback [flags]
+    \\
+    \\Undo the last applied migration.
+    \\
+    \\Flags:
+    \\  --step <n>       Undo the last n instead
+    \\  --lock-wait <s>  Wait up to s seconds for another migrate or
+    \\                   rollback to finish (default: 60; 0: do not wait)
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub const Options = struct {
     /// How many of the newest applied migrations to undo.
@@ -45,17 +56,16 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 /// The options, or null for invalid arguments.
 fn parseArgs(args: []const []const u8) ?Options {
     var options: Options = .{};
-    var i: usize = 0;
-    while (i < args.len) : (i += 2) {
-        if (i + 1 == args.len) return null;
-        const value = args[i + 1];
-        if (std.mem.eql(u8, args[i], "--step")) {
-            options.step = std.fmt.parseInt(usize, value, 10) catch return null;
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| switch (arg) {
+        .flag => |f| if (f.is("--step")) {
+            options.step = std.fmt.parseInt(usize, it.value(f) orelse return null, 10) catch return null;
             if (options.step == 0) return null;
-        } else if (std.mem.eql(u8, args[i], "--lock-wait")) {
-            options.lock_wait = migrations.parseLockWait(value) orelse return null;
-        } else return null;
-    }
+        } else if (f.is("--lock-wait")) {
+            options.lock_wait = migrations.parseLockWait(it.value(f) orelse return null) orelse return null;
+        } else return null,
+        .positional => return null,
+    };
     return options;
 }
 

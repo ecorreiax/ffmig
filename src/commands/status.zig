@@ -12,8 +12,17 @@ const Io = std.Io;
 const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
+const flags = @import("flags.zig");
 
-pub const usage = "Usage: ffmig status\n";
+pub const usage =
+    \\Usage: ffmig status [flags]
+    \\
+    \\List migrations as up or down, with when each ran and whether its
+    \\file has changed since.
+    \\
+    \\Flags:
+    \\
+++ flags.config_option ++ flags.url_option ++ flags.help_option;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     if (args.len != 0) {

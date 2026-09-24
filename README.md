@@ -121,20 +121,30 @@ A `schema_migrations` table made by an earlier ffmig gains the checksum and time
 
 ### Commands
 
-| Command         | Description                                                   |
-|-----------------|---------------------------------------------------------------|
-| `init`          | Create `ffmig.toml` and the migrations directory              |
-| `create`        | Create the database named by the database url                 |
-| `drop`          | Drop that database after confirmation (`--force`)             |
-| `protect`       | Mark the database so that `drop` refuses it                   |
-| `unprotect`     | Remove that mark                                              |
-| `new <name>`    | Create a timestamped migration file                           |
-| `check [files]` | Check `.mig` files (`--ast`, `--down`)                        |
-| `sql <file>`    | Print the SQL for a migration (`--down` for rollback)         |
-| `migrate`       | Apply every pending migration (`--lock-wait <s>`, `--strict`) |
-| `rollback`      | Undo the last migration (`--step <n>` for more)               |
-| `status`        | List migrations as up or down, and when each ran              |
-| `help`          | Show usage                                                    |
+| Command          | Description                                                        |
+|------------------|--------------------------------------------------------------------|
+| `init`           | Create `ffmig.toml` and the migrations directory (`--path <dir>`)  |
+| `create`         | Create the database named by the database url                      |
+| `drop`           | Drop that database after confirmation (`--force`)                  |
+| `protect`        | Mark the database so that `drop` refuses it                        |
+| `unprotect`      | Remove that mark                                                   |
+| `new <name>`     | Create a timestamped migration file                                |
+| `check [files]`  | Check `.mig` files (`--ast`, `--down`)                             |
+| `sql <file>`     | Print the SQL for a migration (`--down` for rollback)              |
+| `migrate`        | Apply every pending migration (`--lock-wait <s>`, `--strict`)      |
+| `rollback`       | Undo the last migration (`--step <n>` for more, `--lock-wait <s>`) |
+| `status`         | List migrations as up or down, and when each ran                   |
+| `help [command]` | Show usage, or one command's flags                                 |
+| `version`        | Print the version (also `--version`)                               |
+
+`ffmig <command> --help` (or `-h`) prints a command's flags. A flag's value can follow it or an `=`: `--step 2` or `--step=2`.
+
+Every command that reads `ffmig.toml` also takes `--config <path>` to use another file, whose `path` is then relative to that file. Every command that connects takes `--url <url>` to use another database than the config names; so does a non-empty `FFMIG_DATABASE_URL` environment variable, which `--url` beats in turn. Both are taken as given, without `${VAR}` expansion. For `init`, the two set the file it writes and the url it writes into it.
+
+```sh
+ffmig status --url postgres://localhost/app_test
+FFMIG_DATABASE_URL=postgres://localhost/app_test ffmig migrate
+```
 
 ### Protecting production
 

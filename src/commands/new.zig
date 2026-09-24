@@ -7,10 +7,19 @@ const std = @import("std");
 const Io = std.Io;
 const Writer = Io.Writer;
 const Env = @import("root.zig").Env;
-const config = @import("../utils/config.zig");
+const flags = @import("flags.zig");
+const migrations = @import("migrations.zig");
 const fs = @import("../utils/fs.zig");
 
-pub const usage = "Usage: ffmig new <name>\n";
+pub const usage =
+    \\Usage: ffmig new [flags] <name>
+    \\
+    \\Create <timestamp>_<name>.mig in the migrations directory, e.g.
+    \\'ffmig new create_users'.
+    \\
+    \\Flags:
+    \\
+++ flags.config_option ++ flags.help_option;
 
 pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Writer.Error!u8 {
     return generate(env, args, fs.now(env.io), out, err);
@@ -18,11 +27,19 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
 /// `run` with the clock injected so tests get stable file names.
 pub fn generate(env: Env, args: []const []const u8, now: u64, out: *Writer, err: *Writer) Writer.Error!u8 {
-    if (args.len != 1) {
+    var positional: ?[]const u8 = null;
+    var it: flags.Iterator = .{ .args = args };
+    while (it.next()) |arg| {
+        if (arg == .flag or positional != null) {
+            try err.writeAll(usage);
+            return 1;
+        }
+        positional = arg.positional;
+    }
+    const name = positional orelse {
         try err.writeAll(usage);
         return 1;
-    }
-    const name = args[0];
+    };
     if (!fs.isValidName(name)) {
         try err.print(
             "ffmig: invalid migration name '{s}'; use letters, digits and underscores, not starting with a digit\n",
@@ -31,16 +48,9 @@ pub fn generate(env: Env, args: []const []const u8, now: u64, out: *Writer, err:
         return 1;
     }
 
-    var diag: config.Diagnostics = .{};
-    const cfg = config.load(env.io, env.cwd, env.gpa, &diag) catch |e| {
-        switch (e) {
-            error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
-            error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
-            else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
-        }
-        return 1;
-    };
-    defer cfg.deinit(env.gpa);
+    var arena_state: std.heap.ArenaAllocator = .init(env.gpa);
+    defer arena_state.deinit();
+    const cfg = try migrations.loadConfig(env, arena_state.allocator(), err) orelse return 1;
 
     const file_name = fs.migrationFileName(env.gpa, now, name) catch {
         try err.writeAll("ffmig: out of memory\n");

@@ -256,6 +256,29 @@ test "migrate, status and rollback" {
     try f.expectRun(&.{"rollback"}, 0, "Nothing to roll back\n", "");
 }
 
+test "--url and FFMIG_DATABASE_URL beat the config" {
+    var f: Fixture = try .init("url_overrides", &.{create_users});
+    defer f.deinit();
+    const real = f.environ.get("DATABASE_URL").?;
+    // A config whose own url cannot resolve, at another path.
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "other.toml", .data = "[migration]\npath = \"db\"\n\n[database]\nurl = \"${NOT_SET}\"\n" });
+
+    try f.expectRun(&.{ "status", "--config", "other.toml" }, 1, "", "ffmig: NOT_SET is not set (used by the database url in other.toml)\n");
+    try f.expectRun(&.{ "status", "--config", "other.toml", "--url", real }, 0,
+        \\down                           db/20260101000000_create_users.mig
+        \\
+    , "");
+    const url_flag = try std.mem.concat(f.arena_state.allocator(), u8, &.{ "--url=", real });
+    try f.expectRun(&.{ "migrate", url_flag, "--config=other.toml" }, 0, "Migrated db/20260101000000_create_users.mig\n", "");
+    try f.expectRun(&.{ "create", "--config", "other.toml", "--url", real }, 0, "Database url_overrides already exists\n", "");
+
+    try f.environ.put("FFMIG_DATABASE_URL", real);
+    try f.expectRun(&.{ "status", "--config", "other.toml" }, 0,
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\
+    , "");
+}
+
 test "references add a foreign key and an index, and roll back" {
     const create_posts = [2][]const u8{
         "20260102000000_create_posts.mig",
