@@ -69,6 +69,30 @@ test "postgres writes an empty table without id as ()" {
     );
 }
 
+test "postgres rename_table escapes the names in its DO block" {
+    // Lowering only makes identifier-like names; a hand-built one still
+    // reads back as the same name.
+    const op: ast.Operation = .{ .span = .{ .start = 0, .end = 0 }, .kind = .{
+        .rename_table = .{ .from = "it's", .to = "a\"b" },
+    } };
+    var actual: Writer.Allocating = .init(testing.allocator);
+    defer actual.deinit();
+    try sql.write(.postgres, &.{op}, &actual.writer);
+    const out = actual.written();
+    try testing.expect(std.mem.startsWith(u8, out, "ALTER TABLE \"it's\" RENAME TO \"a\"\"b\";\nDO $$\n"));
+    try testing.expect(std.mem.endsWith(u8, out, "\n$$;\n"));
+    for ([_][]const u8{
+        "quote_ident('a\"b')::regclass",
+        "'index_a\"b_on_' || substr(c.relname, char_length('index_it''s_on_') + 1)",
+        "c.relname = 'it''s_pkey'",
+        "starts_with(conname, 'fk_it''s_on_')",
+        "s.relname = 'it''s_id_seq'",
+    }) |part| {
+        errdefer std.debug.print("missing: {s}\n", .{part});
+        try testing.expect(std.mem.indexOf(u8, out, part) != null);
+    }
+}
+
 test "execute runs on every dialect unless it names one" {
     const span: mig.token.Span = .{ .start = 0, .end = 0 };
     inline for (comptime std.enums.values(sql.Dialect)) |dialect| {

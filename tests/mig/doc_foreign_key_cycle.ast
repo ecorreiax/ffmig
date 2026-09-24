@@ -1,0 +1,7 @@
+migration M
+  change
+    create_table users id=bigint
+      column team_id bigint null reference index
+    create_table teams id=bigint
+      column owner_id bigint null reference fk=users index
+    add_foreign_key users teams column=team_id

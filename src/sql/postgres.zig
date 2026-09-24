@@ -1,6 +1,7 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
-//! primary keys, literals, named defaults, the tracking table's catalog
-//! lookup, the migration lock, timeouts and the database lookup.
+//! primary keys, literals, named defaults, the renames that follow a
+//! renamed table, the tracking table's catalog lookup, the migration
+//! lock, timeouts and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -67,11 +68,7 @@ pub fn columnType(w: *Writer, c: ast.Column) Writer.Error!void {
 /// under `standard_conforming_strings`, the default since PostgreSQL 9.1.
 pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
     switch (l) {
-        .string => |s| {
-            try w.writeByte('\'');
-            try escaped(w, s, '\'');
-            try w.writeByte('\'');
-        },
+        .string => |s| try w.print("{f}", .{StringLiteral{ .parts = &.{s} }}),
         .integer => |i| try w.print("{d}", .{i}),
         .boolean => |b| try w.writeAll(if (b) "true" else "false"),
         .nil => try w.writeAll("NULL"),
@@ -79,12 +76,79 @@ pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
 }
 
 /// `CURRENT_TIMESTAMP` fits `date` and `time` columns too, through
-/// PostgreSQL's assignment casts.
-pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ast.ColumnType) Writer.Error!void {
+/// PostgreSQL's assignment casts, so the column's type (null when the
+/// operation does not know it) does not matter.
+pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ?ast.ColumnType) Writer.Error!void {
     try w.writeAll(switch (n) {
         .now => "CURRENT_TIMESTAMP",
     });
 }
+
+/// Follows `ALTER TABLE <from> RENAME TO <to>` with a `DO` block that
+/// renames what is named after the table by default, as if it had been
+/// created as `to`: the indexes `index_<from>_on_*` and foreign keys
+/// `fk_<from>_on_*` that ffmig names, and PostgreSQL's own primary key
+/// `<from>_pkey` and `id` sequence `<from>_id_seq`. Other names are left
+/// alone. Which of these exist is only known at run time, so the block
+/// reads the catalog. A new name longer than an identifier may be is an
+/// error, where PostgreSQL would cut it short.
+pub fn renameDefaultNames(w: *Writer, from: []const u8, to: []const u8) Writer.Error!void {
+    try w.print(
+        \\;
+        \\DO $$
+        \\DECLARE
+        \\  t regclass := quote_ident({[to]f})::regclass;
+        \\  r record;
+        \\BEGIN
+        \\  FOR r IN
+        \\    SELECT format('ALTER INDEX %s RENAME', c.oid::regclass) AS rename_sql, c.relname AS old_name,
+        \\      CASE WHEN starts_with(c.relname, {[from_index]f})
+        \\      THEN {[to_index]f} || substr(c.relname, char_length({[from_index]f}) + 1)
+        \\      ELSE {[to_pkey]f} END AS new_name
+        \\    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+        \\    WHERE i.indrelid = t
+        \\      AND (starts_with(c.relname, {[from_index]f}) OR i.indisprimary AND c.relname = {[from_pkey]f})
+        \\    UNION ALL
+        \\    SELECT format('ALTER TABLE %s RENAME CONSTRAINT %I', t, conname), conname,
+        \\      {[to_fk]f} || substr(conname, char_length({[from_fk]f}) + 1)
+        \\    FROM pg_constraint
+        \\    WHERE conrelid = t AND contype = 'f' AND starts_with(conname, {[from_fk]f})
+        \\    UNION ALL
+        \\    SELECT format('ALTER SEQUENCE %s RENAME', s.oid::regclass), s.relname, {[to_seq]f}
+        \\    FROM pg_depend d JOIN pg_class s ON s.oid = d.objid AND d.classid = 'pg_class'::regclass
+        \\    WHERE d.refobjid = t AND s.relkind = 'S' AND s.relname = {[from_seq]f}
+        \\  LOOP
+        \\    IF octet_length(r.new_name) > current_setting('max_identifier_length')::int THEN
+        \\      RAISE EXCEPTION 'cannot rename % to %: longer than % bytes',
+        \\        r.old_name, r.new_name, current_setting('max_identifier_length');
+        \\    END IF;
+        \\    EXECUTE r.rename_sql || format(' TO %I', r.new_name);
+        \\  END LOOP;
+        \\END
+        \\$$
+    , .{
+        .to = StringLiteral{ .parts = &.{to} },
+        .to_pkey = StringLiteral{ .parts = &.{ to, "_pkey" } },
+        .from_pkey = StringLiteral{ .parts = &.{ from, "_pkey" } },
+        .to_index = StringLiteral{ .parts = &.{ "index_", to, "_on_" } },
+        .from_index = StringLiteral{ .parts = &.{ "index_", from, "_on_" } },
+        .to_fk = StringLiteral{ .parts = &.{ "fk_", to, "_on_" } },
+        .from_fk = StringLiteral{ .parts = &.{ "fk_", from, "_on_" } },
+        .to_seq = StringLiteral{ .parts = &.{ to, "_id_seq" } },
+        .from_seq = StringLiteral{ .parts = &.{ from, "_id_seq" } },
+    });
+}
+
+/// The concatenation of `parts` as one string literal, for `{f}`.
+const StringLiteral = struct {
+    parts: []const []const u8,
+
+    pub fn format(l: StringLiteral, w: *Writer) Writer.Error!void {
+        try w.writeByte('\'');
+        for (l.parts) |part| try escaped(w, part, '\'');
+        try w.writeByte('\'');
+    }
+};
 
 /// Key of the advisory lock: "ffmig" in ASCII. PostgreSQL scopes advisory
 /// locks to the current database, so runs on different databases of one

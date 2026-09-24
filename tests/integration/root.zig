@@ -686,3 +686,178 @@ test "CREATE INDEX CONCURRENTLY through execute needs transaction: false" {
     try f.expectQuery(indexes, "users_pkey");
     try f.expectVersions("20260101000000");
 }
+
+/// Writes `file` into the project, then migrates it, rolls it back and
+/// migrates it again, checking `query` after each step: `up` while it is
+/// applied, `down` once it is rolled back.
+fn expectRoundTrip(f: *Fixture, file: [2][]const u8, query: []const u8, up: []const u8, down: []const u8) !void {
+    const arena = f.arena_state.allocator();
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = try std.fs.path.join(arena, &.{ "db", file[0] }), .data = file[1] });
+    const migrated = try std.fmt.allocPrint(arena, "Migrated db/{s}\n", .{file[0]});
+    const rolled_back = try std.fmt.allocPrint(arena, "Rolled back db/{s}\n", .{file[0]});
+    errdefer std.debug.print("round trip of {s}\n", .{file[0]});
+    try f.expectRun(&.{"migrate"}, 0, migrated, "");
+    try f.expectQuery(query, up);
+    try f.expectRun(&.{"rollback"}, 0, rolled_back, "");
+    try f.expectQuery(query, down);
+    try f.expectRun(&.{"migrate"}, 0, migrated, "");
+    try f.expectQuery(query, up);
+}
+
+const create_blog = [2][]const u8{
+    "20260101000000_create_blog.mig",
+    \\migration CreateBlog {
+    \\  change {
+    \\    create_table :users {
+    \\      string :email, null: false
+    \\      string :name, limit: 50
+    \\      integer :role
+    \\      datetime :seen_at
+    \\    }
+    \\    create_table :posts {
+    \\      references :user
+    \\      bigint :editor_id
+    \\      string :title
+    \\    }
+    \\    add_index :posts, :title, name: "posts_title"
+    \\  }
+    \\}
+    \\
+};
+
+test "alter operations migrate, roll back and migrate again" {
+    var f: Fixture = try .init("alter_operations", &.{create_blog});
+    defer f.deinit();
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101000000_create_blog.mig\n", "");
+    try exec(f.conn, "INSERT INTO users (email) VALUES ('a@b.c')");
+
+    // Relations and foreign keys named after the table, plus the custom
+    // "posts_title", which keeps its name.
+    const names =
+        \\SELECT relname FROM pg_class WHERE relname ~ '(posts|articles)'
+        \\UNION ALL SELECT conname FROM pg_constraint WHERE contype = 'f' ORDER BY 1
+    ;
+    try expectRoundTrip(&f, .{
+        "20260102000000_rename_posts.mig",
+        "migration RenamePosts { change { rename_table :posts, :articles } }\n",
+    }, names, "articles,articles_id_seq,articles_pkey,fk_articles_on_user_id,index_articles_on_user_id,posts_title", "fk_posts_on_user_id,index_posts_on_user_id,posts,posts_id_seq,posts_pkey,posts_title");
+    // The renamed sequence still numbers the rows.
+    try exec(f.conn, "INSERT INTO articles (user_id, title) VALUES (1, 'Hello')");
+    try f.expectQuery("SELECT id::text FROM articles", "1");
+
+    // Operations that compute default names find the renamed ones.
+    try expectRoundTrip(&f, .{
+        "20260103000000_remove_user_index.mig",
+        "migration RemoveUserIndex { change { remove_index :articles, :user_id } }\n",
+    }, "SELECT indexname FROM pg_indexes WHERE tablename = 'articles' ORDER BY 1", "articles_pkey,posts_title", "articles_pkey,index_articles_on_user_id,posts_title");
+
+    const types =
+        \\SELECT column_name, data_type || coalesce('(' || character_maximum_length || ')', '')
+        \\FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('name', 'role') ORDER BY 1
+    ;
+    try expectRoundTrip(&f, .{
+        "20260104000000_widen_users.mig",
+        \\migration WidenUsers {
+        \\  change {
+        \\    change_column :users, :name, :string, limit: 255, from: :string, from_limit: 50
+        \\    change_column :users, :role, :bigint, from: :integer
+        \\  }
+        \\}
+        \\
+    }, types, "name character varying(255),role bigint", "name character varying(50),role integer");
+
+    // Filling the nulls is not undone.
+    const role_null =
+        \\SELECT is_nullable, (SELECT string_agg(coalesce(role::text, 'null'), ',') FROM users)
+        \\FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'role'
+    ;
+    try f.expectQuery(role_null, "YES null");
+    try expectRoundTrip(&f, .{
+        "20260105000000_require_role.mig",
+        "migration RequireRole { change { change_column_null :users, :role, false, default: 0 } }\n",
+    }, role_null, "NO 0", "YES 0");
+
+    const defaults =
+        \\SELECT column_name, column_default FROM information_schema.columns
+        \\WHERE table_name = 'users' AND column_name IN ('email', 'role', 'seen_at') ORDER BY 1
+    ;
+    try expectRoundTrip(&f, .{
+        "20260106000000_user_defaults.mig",
+        \\migration UserDefaults {
+        \\  change {
+        \\    change_column_default :users, :email, from: nil, to: "it's"
+        \\    change_column_default :users, :role, from: nil, to: 1
+        \\    change_column_default :users, :seen_at, from: nil, to: :now
+        \\  }
+        \\}
+        \\
+    }, defaults, "email 'it''s'::character varying,role 1,seen_at CURRENT_TIMESTAMP", "email NULL,role NULL,seen_at NULL");
+
+    try expectRoundTrip(&f, .{
+        "20260107000000_rename_title_index.mig",
+        "migration RenameTitleIndex { change { rename_index :articles, \"posts_title\", \"articles_title\" } }\n",
+    }, "SELECT indexname FROM pg_indexes WHERE tablename = 'articles' ORDER BY 1", "articles_pkey,articles_title", "articles_pkey,posts_title");
+
+    const foreign_keys =
+        \\SELECT conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+        \\WHERE conrelid = 'articles'::regclass AND contype = 'f' ORDER BY conname
+    ;
+    const user_fk = "fk_articles_on_user_id FOREIGN KEY (user_id) REFERENCES users(id)";
+    const editor_fk = "fk_articles_on_editor_id FOREIGN KEY (editor_id) REFERENCES users(id) ON DELETE SET NULL";
+    try expectRoundTrip(&f, .{
+        "20260108000000_add_editor_key.mig",
+        "migration AddEditorKey { change { add_foreign_key :articles, :users, column: :editor_id, on_delete: :nullify } }\n",
+    }, foreign_keys, editor_fk ++ "," ++ user_fk, user_fk);
+    try expectRoundTrip(&f, .{
+        "20260109000000_remove_user_key.mig",
+        "migration RemoveUserKey { change { remove_foreign_key :articles, :users, column: :user_id } }\n",
+    }, foreign_keys, editor_fk, editor_fk ++ "," ++ user_fk);
+
+    // Back to the start, and forward again.
+    try f.expectRun(&.{ "rollback", "--step", "8" }, 0,
+        \\Rolled back db/20260109000000_remove_user_key.mig
+        \\Rolled back db/20260108000000_add_editor_key.mig
+        \\Rolled back db/20260107000000_rename_title_index.mig
+        \\Rolled back db/20260106000000_user_defaults.mig
+        \\Rolled back db/20260105000000_require_role.mig
+        \\Rolled back db/20260104000000_widen_users.mig
+        \\Rolled back db/20260103000000_remove_user_index.mig
+        \\Rolled back db/20260102000000_rename_posts.mig
+        \\
+    , "");
+    try f.expectQuery(names, "fk_posts_on_user_id,index_posts_on_user_id,posts,posts_id_seq,posts_pkey,posts_title");
+    try f.expectQuery(types, "name character varying(50),role integer");
+    try f.expectQuery(defaults, "email NULL,role NULL,seen_at NULL");
+    try f.expectVersions("20260101000000");
+    var o = try f.run(&.{"migrate"});
+    defer o.deinit();
+    try testing.expectEqual(0, o.code);
+    try f.expectVersions("20260101000000,20260102000000,20260103000000,20260104000000,20260105000000,20260106000000,20260107000000,20260108000000,20260109000000");
+    try f.expectQuery(foreign_keys, editor_fk);
+}
+
+test "rename_table fails when a renamed index name would be too long" {
+    // 47 bytes: `fk_<to>_on_user_id` fits in 63, `index_<to>_on_user_id` does not.
+    const long = "a" ** 47;
+    var f: Fixture = try .init("rename_table_too_long", &.{create_blog});
+    defer f.deinit();
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101000000_create_blog.mig\n", "");
+
+    // Even without a transaction: the rename and its DO block are one
+    // statement, which PostgreSQL runs as a whole.
+    inline for (.{ "", ", transaction: false" }) |options| {
+        try f.tmp.dir.writeFile(testing.io, .{
+            .sub_path = "db/20260102000000_rename_posts.mig",
+            .data = "migration RenamePosts" ++ options ++ " { change { rename_table :posts, :" ++ long ++ " } }\n",
+        });
+        var o = try f.run(&.{"migrate"});
+        defer o.deinit();
+        try testing.expectEqual(1, o.code);
+        const message = "ffmig: db/20260102000000_rename_posts.mig: cannot rename index_posts_on_user_id to index_" ++ long ++
+            "_on_user_id: longer than 63 bytes\nCONTEXT:  PL/pgSQL function inline_code_block line 25 at RAISE\n" ++
+            "while running:\nALTER TABLE \"posts\" RENAME TO \"" ++ long ++ "\";\nDO $$\n";
+        try testing.expectStringStartsWith(o.err.written(), message);
+        try f.expectQuery("SELECT relname FROM pg_class WHERE relname ~ 'posts' ORDER BY 1", "index_posts_on_user_id,posts,posts_id_seq,posts_pkey,posts_title");
+        try f.expectVersions("20260101000000");
+    }
+}

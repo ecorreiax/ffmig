@@ -25,12 +25,32 @@ pub fn lower(arena: Allocator, file: syntax.File, diag: *Diagnostic) Error!ast.M
 /// The operations a section may hold. `add_reference` and
 /// `remove_reference` lower to `add_column` and `remove_column`.
 /// `execute` is only allowed in `up` and `down`.
-const OpName = enum { create_table, drop_table, add_column, remove_column, rename_column, add_index, remove_index, add_reference, remove_reference, execute };
+const OpName = enum {
+    create_table,
+    drop_table,
+    rename_table,
+    add_column,
+    remove_column,
+    rename_column,
+    change_column,
+    change_column_null,
+    change_column_default,
+    add_index,
+    remove_index,
+    rename_index,
+    add_reference,
+    remove_reference,
+    add_foreign_key,
+    remove_foreign_key,
+    execute,
+};
 
 const migration_options = [_][]const u8{"transaction"};
 const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale" };
 const index_options = [_][]const u8{ "unique", "name" };
 const reference_options = [_][]const u8{ "type", "to", "null", "foreign_key", "index", "on_delete" };
+const foreign_key_options = [_][]const u8{ "column", "on_delete", "name" };
+const change_column_options = [_][]const u8{ "limit", "precision", "scale", "from", "from_limit", "from_precision", "from_scale" };
 
 const Lowerer = struct {
     arena: Allocator,
@@ -88,13 +108,20 @@ const Lowerer = struct {
         const kind: ast.Operation.Kind = switch (name) {
             .create_table => .{ .create_table = try l.lowerCreateTable(call) },
             .drop_table => .{ .drop_table = try l.lowerDropTable(call) },
+            .rename_table => .{ .rename_table = try l.lowerRenameTable(call) },
             .add_column => .{ .add_column = try l.lowerAddColumn(call) },
             .remove_column => .{ .remove_column = try l.lowerRemoveColumn(call) },
             .rename_column => .{ .rename_column = try l.lowerRenameColumn(call) },
+            .change_column => .{ .change_column = try l.lowerChangeColumn(call) },
+            .change_column_null => .{ .change_column_null = try l.lowerChangeColumnNull(call) },
+            .change_column_default => .{ .change_column_default = try l.lowerChangeColumnDefault(call) },
             .add_index => .{ .add_index = try l.lowerAddIndex(call) },
             .remove_index => .{ .remove_index = try l.lowerRemoveIndex(call) },
+            .rename_index => .{ .rename_index = try l.lowerRenameIndex(call) },
             .add_reference => .{ .add_column = try l.lowerAddReference(call) },
             .remove_reference => .{ .remove_column = try l.lowerRemoveReference(call) },
+            .add_foreign_key => .{ .add_foreign_key = try l.lowerAddForeignKey(call) },
+            .remove_foreign_key => .{ .remove_foreign_key = try l.lowerRemoveForeignKey(call) },
             .execute => .{ .execute = try l.lowerExecute(call) },
         };
         return .{ .kind = kind, .span = call.span };
@@ -116,6 +143,15 @@ const Lowerer = struct {
         const id = try l.optionId(call.options);
         const columns = if (call.block) |block| try l.lowerColumns(table, id, block) else null;
         return .{ .table = table, .id = id, .columns = columns };
+    }
+
+    fn lowerRenameTable(l: *Lowerer, call: syntax.Call) Error!ast.RenameTable {
+        try l.expectArgCount(call, 2, 2, ":from, :to");
+        const from = try l.expectSymbol(call, 0, ":from");
+        const to = try l.expectSymbol(call, 1, ":to");
+        try l.checkOptions(call, &.{});
+        try l.expectNoBlock(call);
+        return .{ .from = from, .to = to };
     }
 
     fn lowerAddColumn(l: *Lowerer, call: syntax.Call) Error!ast.AddColumn {
@@ -154,6 +190,66 @@ const Lowerer = struct {
         return .{ .table = table, .from = from, .to = to };
     }
 
+    /// `change_column :table, :column, :type`, with the new type's size
+    /// options, and `from:` plus `from_limit:`, ... for the old type.
+    fn lowerChangeColumn(l: *Lowerer, call: syntax.Call) Error!ast.ChangeColumn {
+        try l.expectArgCount(call, 3, 3, ":table, :column, :type");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const column = try l.expectSymbol(call, 1, ":column");
+        const column_type = try l.expectColumnType(call, 2);
+        try l.checkOptions(call, &change_column_options);
+        try l.expectNoBlock(call);
+        const to = try l.lowerSizedType(column_type, call.options, "");
+        const opt = findOption(call.options, "from") orelse {
+            for ([_][]const u8{ "from_limit", "from_precision", "from_scale" }) |key| {
+                if (findOption(call.options, key)) |o| return l.fail(labelSpan(o), "'{s}:' needs 'from:'", .{key});
+            }
+            return .{ .table = table, .column = column, .to = to, .from = null };
+        };
+        const from_type = switch (opt.value.kind) {
+            .symbol => |s| std.meta.stringToEnum(ast.ColumnType, s) orelse
+                return l.fail(opt.value.span, "unknown column type '{s}'", .{s}),
+            else => return l.fail(opt.value.span, "'from:' must be a column type such as :string", .{}),
+        };
+        return .{ .table = table, .column = column, .to = to, .from = try l.lowerSizedType(from_type, call.options, "from_") };
+    }
+
+    /// `change_column_null :table, :column, true/false`, with `default:`
+    /// to fill the nulls before setting false.
+    fn lowerChangeColumnNull(l: *Lowerer, call: syntax.Call) Error!ast.ChangeColumnNull {
+        try l.expectArgCount(call, 3, 3, ":table, :column, true/false");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const column = try l.expectSymbol(call, 1, ":column");
+        const value = call.args[2];
+        const allow_null = switch (value.kind) {
+            .boolean => |b| b,
+            else => return l.fail(value.span, "change_column_null expects true or false, found {s}", .{describe(value)}),
+        };
+        try l.checkOptions(call, &.{"default"});
+        try l.expectNoBlock(call);
+        var result: ast.ChangeColumnNull = .{ .table = table, .column = column, .null = allow_null };
+        if (findOption(call.options, "default")) |opt| {
+            if (allow_null) return l.fail(labelSpan(opt), "change_column_null takes 'default:' only with false", .{});
+            if (opt.value.kind == .nil) return l.fail(opt.value.span, "change_column_null cannot fill nulls with nil", .{});
+            result.default = try l.lowerUntypedDefault(opt.value);
+        }
+        return result;
+    }
+
+    /// `change_column_default :table, :column, from: x, to: y`; `from:`
+    /// is optional.
+    fn lowerChangeColumnDefault(l: *Lowerer, call: syntax.Call) Error!ast.ChangeColumnDefault {
+        try l.expectArgCount(call, 2, 2, ":table, :column");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const column = try l.expectSymbol(call, 1, ":column");
+        try l.checkOptions(call, &.{ "from", "to" });
+        try l.expectNoBlock(call);
+        const to = findOption(call.options, "to") orelse
+            return l.fail(call.name_span, "change_column_default needs 'to:'", .{});
+        const from = if (findOption(call.options, "from")) |opt| try l.lowerUntypedDefault(opt.value) else null;
+        return .{ .table = table, .column = column, .from = from, .to = try l.lowerUntypedDefault(to.value) };
+    }
+
     fn lowerAddIndex(l: *Lowerer, call: syntax.Call) Error!ast.AddIndex {
         try l.expectArgCount(call, 2, 2, ":table, :column");
         const table = try l.expectSymbol(call, 0, ":table");
@@ -186,6 +282,53 @@ const Lowerer = struct {
         };
     }
 
+    /// `rename_index :table, "from", "to"`. PostgreSQL does not need the
+    /// table, but other databases name indexes per table.
+    fn lowerRenameIndex(l: *Lowerer, call: syntax.Call) Error!ast.RenameIndex {
+        try l.expectArgCount(call, 3, 3, ":table, \"from\", \"to\"");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const from = try l.expectString(call, 1, "\"from\"");
+        const to = try l.expectString(call, 2, "\"to\"");
+        try l.checkOptions(call, &.{});
+        try l.expectNoBlock(call);
+        return .{ .table = table, .from = from, .to = to };
+    }
+
+    fn lowerAddForeignKey(l: *Lowerer, call: syntax.Call) Error!ast.AddForeignKey {
+        try l.expectArgCount(call, 2, 2, ":table, :to_table");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const to_table = try l.expectSymbol(call, 1, ":to_table");
+        try l.checkOptions(call, &foreign_key_options);
+        try l.expectNoBlock(call);
+        return .{
+            .table = table,
+            .column = try l.optionSymbol(call.options, "column") orelse
+                return l.fail(call.name_span, "add_foreign_key needs 'column:'", .{}),
+            .foreign_key = .{ .table = to_table, .on_delete = try l.optionOnDelete(call.options) },
+            .name = try l.optionString(call.options, "name"),
+        };
+    }
+
+    fn lowerRemoveForeignKey(l: *Lowerer, call: syntax.Call) Error!ast.RemoveForeignKey {
+        try l.expectArgCount(call, 1, 2, ":table [, :to_table]");
+        const table = try l.expectSymbol(call, 0, ":table");
+        const to_table = if (call.args.len == 2) try l.expectSymbol(call, 1, ":to_table") else null;
+        try l.checkOptions(call, &foreign_key_options);
+        try l.expectNoBlock(call);
+        const column = try l.optionSymbol(call.options, "column");
+        const name = try l.optionString(call.options, "name");
+        if (column == null and name == null) {
+            return l.fail(call.name_span, "remove_foreign_key needs 'column:' or 'name:'", .{});
+        }
+        return .{
+            .table = table,
+            .to_table = to_table,
+            .column = column,
+            .on_delete = try l.optionOnDelete(call.options),
+            .name = name,
+        };
+    }
+
     fn lowerAddReference(l: *Lowerer, call: syntax.Call) Error!ast.AddColumn {
         const table, const column = try l.lowerReferenceOperation(call);
         return .{ .table = table, .column = column };
@@ -199,12 +342,8 @@ const Lowerer = struct {
     /// `execute "sql"`, with an optional `dialect:`.
     fn lowerExecute(l: *Lowerer, call: syntax.Call) Error!ast.Execute {
         try l.expectArgCount(call, 1, 1, "\"sql\"");
-        const value = call.args[0];
-        const text = switch (value.kind) {
-            .string => |s| s,
-            else => return l.fail(value.span, "execute expects \"sql\" to be a string, found {s}", .{describe(value)}),
-        };
-        if (std.mem.indexOfNone(u8, text, " \t\r\n;") == null) return l.fail(value.span, "execute has no SQL", .{});
+        const text = try l.expectString(call, 0, "\"sql\"");
+        if (std.mem.indexOfNone(u8, text, " \t\r\n;") == null) return l.fail(call.args[0].span, "execute has no SQL", .{});
         try l.checkOptions(call, &.{"dialect"});
         try l.expectNoBlock(call);
         return .{ .sql = text, .dialect = try l.optionDialect(call.options) };
@@ -287,23 +426,43 @@ const Lowerer = struct {
         options: []const syntax.Option,
         span: Span,
     ) Error!ast.Column {
-        var column: ast.Column = .{ .name = name, .type = column_type, .span = span };
+        const sized = try l.lowerSizedType(column_type, options, "");
+        var column: ast.Column = .{
+            .name = name,
+            .type = column_type,
+            .limit = sized.limit,
+            .precision = sized.precision,
+            .scale = sized.scale,
+            .span = span,
+        };
         if (try l.optionBool(options, "null")) |n| column.null = n;
-        if (findOption(options, "limit")) |opt| {
-            if (column_type != .string) return l.fail(labelSpan(opt), "'limit:' is only allowed on string columns", .{});
-            column.limit = try l.integer(opt, u32, 1, std.math.maxInt(u32));
-        }
-        if (findOption(options, "precision")) |opt| {
-            if (column_type != .decimal) return l.fail(labelSpan(opt), "'precision:' is only allowed on decimal columns", .{});
-            column.precision = try l.integer(opt, u8, 1, 255);
-        }
-        if (findOption(options, "scale")) |opt| {
-            if (column_type != .decimal) return l.fail(labelSpan(opt), "'scale:' is only allowed on decimal columns", .{});
-            const precision = column.precision orelse return l.fail(labelSpan(opt), "'scale:' needs 'precision:'", .{});
-            column.scale = try l.integer(opt, u8, 0, precision);
-        }
         if (findOption(options, "default")) |opt| column.default = try l.lowerDefault(opt.value, column);
         return column;
+    }
+
+    /// `column_type` with the size options `limit:`, `precision:` and
+    /// `scale:`, each spelled with `prefix` in front (`from_limit:`).
+    fn lowerSizedType(
+        l: *Lowerer,
+        column_type: ast.ColumnType,
+        options: []const syntax.Option,
+        comptime prefix: []const u8,
+    ) Error!ast.SizedType {
+        var sized: ast.SizedType = .{ .type = column_type };
+        if (findOption(options, prefix ++ "limit")) |opt| {
+            if (column_type != .string) return l.fail(labelSpan(opt), "'" ++ prefix ++ "limit:' is only allowed on string columns", .{});
+            sized.limit = try l.integer(opt, u32, 1, std.math.maxInt(u32));
+        }
+        if (findOption(options, prefix ++ "precision")) |opt| {
+            if (column_type != .decimal) return l.fail(labelSpan(opt), "'" ++ prefix ++ "precision:' is only allowed on decimal columns", .{});
+            sized.precision = try l.integer(opt, u8, 1, 255);
+        }
+        if (findOption(options, prefix ++ "scale")) |opt| {
+            if (column_type != .decimal) return l.fail(labelSpan(opt), "'" ++ prefix ++ "scale:' is only allowed on decimal columns", .{});
+            const precision = sized.precision orelse return l.fail(labelSpan(opt), "'" ++ prefix ++ "scale:' needs '" ++ prefix ++ "precision:'", .{});
+            sized.scale = try l.integer(opt, u8, 0, precision);
+        }
+        return sized;
     }
 
     /// The `<name>_id` column of a reference, from reference options already
@@ -337,15 +496,10 @@ const Lowerer = struct {
                     else => return l.fail(opt.value.span, "'to:' must be a symbol", .{}),
                 };
             } else foreign_key.table = try tableName(l.arena, name);
-            if (findOption(options, "on_delete")) |opt| {
-                const on_delete = switch (opt.value.kind) {
-                    .symbol => |s| std.meta.stringToEnum(ast.OnDelete, s),
-                    else => null,
-                } orelse return l.fail(opt.value.span, "'on_delete:' must be :cascade, :nullify or :restrict", .{});
-                if (on_delete == .nullify and !column.null) {
-                    return l.fail(opt.value.span, "on_delete: :nullify on non-null column '{s}'", .{column.name});
-                }
-                foreign_key.on_delete = on_delete;
+            foreign_key.on_delete = try l.optionOnDelete(options);
+            if (foreign_key.on_delete == .nullify and !column.null) {
+                const opt = findOption(options, "on_delete").?;
+                return l.fail(opt.value.span, "on_delete: :nullify on non-null column '{s}'", .{column.name});
             }
             reference.foreign_key = foreign_key;
         } else for ([_][]const u8{ "to", "on_delete" }) |key| {
@@ -353,6 +507,20 @@ const Lowerer = struct {
         }
         column.reference = reference;
         return column;
+    }
+
+    /// The value of a `default:` on an operation that does not know the
+    /// column's type (`change_column_default`, `change_column_null`): any
+    /// literal, or a known named default. The database checks that it fits.
+    fn lowerUntypedDefault(l: *Lowerer, value: syntax.Value) Error!ast.Default {
+        return switch (value.kind) {
+            .symbol => |s| .{ .named = std.meta.stringToEnum(ast.NamedDefault, s) orelse
+                return l.fail(value.span, "unknown default ':{s}'", .{s}) },
+            .nil => .{ .literal = .nil },
+            .string => |s| .{ .literal = .{ .string = s } },
+            .integer => |i| .{ .literal = .{ .integer = i } },
+            .boolean => |b| .{ .literal = .{ .boolean = b } },
+        };
     }
 
     /// `column` has every other option set, since `default: nil` depends on `null:`.
@@ -409,6 +577,15 @@ const Lowerer = struct {
         return switch (value.kind) {
             .symbol => |s| s,
             else => l.fail(value.span, "{s} expects " ++ what ++ " to be a symbol, found {s}", .{ call.name, describe(value) }),
+        };
+    }
+
+    /// Positional argument `index`, which must exist, as a string.
+    fn expectString(l: *Lowerer, call: syntax.Call, index: usize, comptime what: []const u8) Error![]const u8 {
+        const value = call.args[index];
+        return switch (value.kind) {
+            .string => |s| s,
+            else => l.fail(value.span, "{s} expects " ++ what ++ " to be a string, found {s}", .{ call.name, describe(value) }),
         };
     }
 
@@ -475,6 +652,15 @@ const Lowerer = struct {
         return l.fail(opt.value.span, "'index:' must be true, false or :unique", .{});
     }
 
+    /// `on_delete:` of a foreign key: `:cascade`, `:nullify` or `:restrict`.
+    fn optionOnDelete(l: *Lowerer, options: []const syntax.Option) Error!?ast.OnDelete {
+        const opt = findOption(options, "on_delete") orelse return null;
+        return switch (opt.value.kind) {
+            .symbol => |s| std.meta.stringToEnum(ast.OnDelete, s),
+            else => null,
+        } orelse return l.fail(opt.value.span, "'on_delete:' must be :cascade, :nullify or :restrict", .{});
+    }
+
     /// An `execute`'s `dialect:`, a symbol naming an `ast.Dialect`.
     fn optionDialect(l: *Lowerer, options: []const syntax.Option) Error!?ast.Dialect {
         const opt = findOption(options, "dialect") orelse return null;
@@ -490,6 +676,14 @@ const Lowerer = struct {
         return switch (opt.value.kind) {
             .boolean => |b| b,
             else => l.fail(opt.value.span, "'{s}:' must be true or false", .{key}),
+        };
+    }
+
+    fn optionSymbol(l: *Lowerer, options: []const syntax.Option, key: []const u8) Error!?[]const u8 {
+        const opt = findOption(options, key) orelse return null;
+        return switch (opt.value.kind) {
+            .symbol => |s| s,
+            else => l.fail(opt.value.span, "'{s}:' must be a symbol", .{key}),
         };
     }
 

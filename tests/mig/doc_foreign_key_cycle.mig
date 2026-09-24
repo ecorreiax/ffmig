@@ -1,0 +1,11 @@
+migration M {
+  change {
+    create_table :users {
+      references :team, foreign_key: false
+    }
+    create_table :teams {
+      references :owner, to: :users
+    }
+    add_foreign_key :users, :teams, column: :team_id
+  }
+}

@@ -1,0 +1,5 @@
+migration M {
+  change {
+    remove_foreign_key :posts, :users
+  }
+}

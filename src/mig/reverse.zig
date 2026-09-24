@@ -49,6 +49,38 @@ fn invert(op: ast.Operation, diag: *Diagnostic) Error!ast.Operation.Kind {
             .unique = o.unique,
             .name = o.name,
         } },
+        .rename_table => |o| .{ .rename_table = .{ .from = o.to, .to = o.from } },
+        .change_column => |o| .{ .change_column = .{
+            .table = o.table,
+            .column = o.column,
+            .to = o.from orelse return irreversible(op, diag, "change_column without 'from:'"),
+            .from = o.to,
+        } },
+        // Filling the nulls is not undone.
+        .change_column_null => |o| .{ .change_column_null = .{ .table = o.table, .column = o.column, .null = !o.null } },
+        .change_column_default => |o| .{ .change_column_default = .{
+            .table = o.table,
+            .column = o.column,
+            .from = o.to,
+            .to = o.from orelse return irreversible(op, diag, "change_column_default without 'from:'"),
+        } },
+        .rename_index => |o| .{ .rename_index = .{ .table = o.table, .from = o.to, .to = o.from } },
+        .add_foreign_key => |o| .{ .remove_foreign_key = .{
+            .table = o.table,
+            .to_table = o.foreign_key.table,
+            .column = o.column,
+            .on_delete = o.foreign_key.on_delete,
+            .name = o.name,
+        } },
+        .remove_foreign_key => |o| .{ .add_foreign_key = .{
+            .table = o.table,
+            .column = o.column orelse return irreversible(op, diag, "remove_foreign_key without :to_table or 'column:'"),
+            .foreign_key = .{
+                .table = o.to_table orelse return irreversible(op, diag, "remove_foreign_key without :to_table or 'column:'"),
+                .on_delete = o.on_delete,
+            },
+            .name = o.name,
+        } },
         // Lowering rejects it in `change`.
         .execute => return irreversible(op, diag, "execute"),
     };

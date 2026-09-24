@@ -1,8 +1,9 @@
 //! SQL generation. Turns `ast.Operation`s into SQL statements for one
 //! dialect, each ending with `;\n`: one per operation, plus an index
 //! statement per reference (see `Statements`). An `execute` is written as
-//! is, and may hold several statements. Callers check `unsupported`
-//! before writing anything.
+//! is, and may hold several statements; so may `rename_table` and
+//! `change_column_null`, whose statements are sent together. Callers
+//! check `unsupported` before writing anything.
 //!
 //! This file holds what every dialect shares: the shape of each statement
 //! and default index names. Each dialect file (`postgres.zig`) holds only
@@ -361,6 +362,66 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
             // Lowering guarantees a column or a name.
             try indexName(D, o.table, o.column orelse "", o.name, w);
         },
+        .rename_table => |o| {
+            try alterTable(D, o.from, w);
+            try w.writeAll(" RENAME TO ");
+            try D.identifier(w, o.to);
+            try D.renameDefaultNames(w, o.from, o.to);
+        },
+        .change_column => |o| {
+            try alterColumn(D, o.table, o.column, w);
+            try w.writeAll(" TYPE ");
+            try D.columnType(w, .{
+                .name = o.column,
+                .type = o.to.type,
+                .limit = o.to.limit,
+                .precision = o.to.precision,
+                .scale = o.to.scale,
+                .span = .{ .start = 0, .end = 0 },
+            });
+        },
+        .change_column_null => |o| {
+            if (o.default) |d| {
+                try w.writeAll("UPDATE ");
+                try D.identifier(w, o.table);
+                try w.writeAll(" SET ");
+                try D.identifier(w, o.column);
+                try w.writeAll(" = ");
+                try defaultValue(D, d, null, w);
+                try w.writeAll(" WHERE ");
+                try D.identifier(w, o.column);
+                try w.writeAll(" IS NULL;\n");
+            }
+            try alterColumn(D, o.table, o.column, w);
+            try w.writeAll(if (o.null) " DROP NOT NULL" else " SET NOT NULL");
+        },
+        .change_column_default => |o| {
+            try alterColumn(D, o.table, o.column, w);
+            if (o.to == .literal and o.to.literal == .nil) return w.writeAll(" DROP DEFAULT");
+            try w.writeAll(" SET DEFAULT ");
+            try defaultValue(D, o.to, null, w);
+        },
+        .rename_index => |o| {
+            try w.writeAll("ALTER INDEX ");
+            try D.identifier(w, o.from);
+            try w.writeAll(" RENAME TO ");
+            try D.identifier(w, o.to);
+        },
+        .add_foreign_key => |o| {
+            try alterTable(D, o.table, w);
+            try w.writeAll(" ADD CONSTRAINT ");
+            try foreignKeyName(D, o.table, o.column, o.name, w);
+            try w.writeAll(" FOREIGN KEY (");
+            try D.identifier(w, o.column);
+            try w.writeAll(") ");
+            try references(D, o.foreign_key, w);
+        },
+        .remove_foreign_key => |o| {
+            try alterTable(D, o.table, w);
+            try w.writeAll(" DROP CONSTRAINT ");
+            // Lowering guarantees a column or a name.
+            try foreignKeyName(D, o.table, o.column orelse "", o.name, w);
+        },
         .execute => |o| try w.writeAll(withoutTerminator(o.sql)),
     }
 }
@@ -385,6 +446,42 @@ fn alterTable(comptime D: type, table: []const u8, w: *Writer) Writer.Error!void
     try D.identifier(w, table);
 }
 
+fn alterColumn(comptime D: type, table: []const u8, col: []const u8, w: *Writer) Writer.Error!void {
+    try alterTable(D, table, w);
+    try w.writeAll(" ALTER COLUMN ");
+    try D.identifier(w, col);
+}
+
+/// `name`, or the default `fk_<table>_on_<column>`, quoted.
+fn foreignKeyName(comptime D: type, table: []const u8, col: []const u8, name: ?[]const u8, w: *Writer) Writer.Error!void {
+    if (name) |n| return D.identifier(w, n);
+    try D.identifierParts(w, &.{ "fk_", table, "_on_", col });
+}
+
+/// `REFERENCES "table" ("id") [ON DELETE ...]`, the part of a foreign key
+/// that `references` and `add_foreign_key` share.
+fn references(comptime D: type, fk: ast.ForeignKey, w: *Writer) Writer.Error!void {
+    try w.writeAll("REFERENCES ");
+    try D.identifier(w, fk.table);
+    try w.writeAll(" (");
+    try D.identifier(w, "id");
+    try w.writeByte(')');
+    if (fk.on_delete) |a| try w.writeAll(switch (a) {
+        .cascade => " ON DELETE CASCADE",
+        .nullify => " ON DELETE SET NULL",
+        .restrict => " ON DELETE RESTRICT",
+    });
+}
+
+/// A default's value, for a column of type `column_type`, or of a type
+/// the operation does not know when null.
+fn defaultValue(comptime D: type, d: ast.Default, column_type: ?ast.ColumnType, w: *Writer) Writer.Error!void {
+    switch (d) {
+        .literal => |l| try D.literal(w, l),
+        .named => |n| try D.namedDefault(w, n, column_type),
+    }
+}
+
 /// `name`, or the default `index_<table>_on_<column>`, quoted.
 fn indexName(comptime D: type, table: []const u8, col: []const u8, name: ?[]const u8, w: *Writer) Writer.Error!void {
     if (name) |n| return D.identifier(w, n);
@@ -399,24 +496,13 @@ fn column(comptime D: type, table: []const u8, c: ast.Column, w: *Writer) Writer
     try D.columnType(w, c);
     if (c.default) |d| {
         try w.writeAll(" DEFAULT ");
-        switch (d) {
-            .literal => |l| try D.literal(w, l),
-            .named => |n| try D.namedDefault(w, n, c.type),
-        }
+        try defaultValue(D, d, c.type, w);
     }
     if (!c.null) try w.writeAll(" NOT NULL");
     const r = c.reference orelse return;
     const fk = r.foreign_key orelse return;
     try w.writeAll(" CONSTRAINT ");
-    try D.identifierParts(w, &.{ "fk_", table, "_on_", c.name });
-    try w.writeAll(" REFERENCES ");
-    try D.identifier(w, fk.table);
-    try w.writeAll(" (");
-    try D.identifier(w, "id");
-    try w.writeByte(')');
-    if (fk.on_delete) |a| try w.writeAll(switch (a) {
-        .cascade => " ON DELETE CASCADE",
-        .nullify => " ON DELETE SET NULL",
-        .restrict => " ON DELETE RESTRICT",
-    });
+    try foreignKeyName(D, table, c.name, null, w);
+    try w.writeByte(' ');
+    try references(D, fk, w);
 }

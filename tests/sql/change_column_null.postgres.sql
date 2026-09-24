@@ -1,0 +1,10 @@
+-- up
+UPDATE "users" SET "role" = 0 WHERE "role" IS NULL;
+ALTER TABLE "users" ALTER COLUMN "role" SET NOT NULL;
+UPDATE "users" SET "seen_at" = CURRENT_TIMESTAMP WHERE "seen_at" IS NULL;
+ALTER TABLE "users" ALTER COLUMN "seen_at" SET NOT NULL;
+ALTER TABLE "users" ALTER COLUMN "nickname" DROP NOT NULL;
+-- down
+ALTER TABLE "users" ALTER COLUMN "nickname" SET NOT NULL;
+ALTER TABLE "users" ALTER COLUMN "seen_at" DROP NOT NULL;
+ALTER TABLE "users" ALTER COLUMN "role" DROP NOT NULL;

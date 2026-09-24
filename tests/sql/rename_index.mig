@@ -1,0 +1,5 @@
+migration M {
+  change {
+    rename_index :users, "index_users_on_email", "users_email_key"
+  }
+}

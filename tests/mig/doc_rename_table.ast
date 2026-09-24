@@ -1,0 +1,3 @@
+migration M
+  change
+    rename_table posts articles

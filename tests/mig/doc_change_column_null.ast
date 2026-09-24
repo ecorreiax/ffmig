@@ -1,0 +1,4 @@
+migration M
+  change
+    change_column_null users role not_null default=0
+    change_column_null users nickname null

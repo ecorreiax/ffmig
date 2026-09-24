@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_foreign_key :posts, :users, column: :author_id, on_delete: :delete
+  }
+}

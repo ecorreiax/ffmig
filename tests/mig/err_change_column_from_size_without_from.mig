@@ -1,0 +1,5 @@
+migration M {
+  change {
+    change_column :users, :name, :text, from_limit: 100
+  }
+}

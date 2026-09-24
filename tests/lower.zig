@@ -116,6 +116,66 @@ test "every operation lowers" {
     try testing.expectEqualStrings("drop_table :a", ops[0].span.slice(source));
 }
 
+test "alter operations lower" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    const source =
+        \\migration M { change {
+        \\  rename_table :posts, :articles
+        \\  change_column :t, :c, :decimal, precision: 12, scale: 2, from: :integer
+        \\  change_column :t, :c, :text
+        \\  change_column_null :t, :c, false, default: "none"
+        \\  change_column_null :t, :c, true
+        \\  change_column_default :t, :c, from: nil, to: :now
+        \\  change_column_default :t, :c, to: 5
+        \\  rename_index :t, "a", "b"
+        \\  add_foreign_key :t, :users, column: :user_id, on_delete: :nullify, name: "t_user"
+        \\  remove_foreign_key :t, name: "t_user"
+        \\  remove_foreign_key :t, :users, column: :user_id
+        \\} }
+    ;
+    const ops = (try lowerSource(arena.allocator(), source, &diag)).body.change;
+    try testing.expectEqual(11, ops.len);
+
+    try testing.expectEqualDeep(ast.RenameTable{ .from = "posts", .to = "articles" }, ops[0].kind.rename_table);
+    try testing.expectEqualDeep(ast.ChangeColumn{
+        .table = "t",
+        .column = "c",
+        .to = .{ .type = .decimal, .precision = 12, .scale = 2 },
+        .from = .{ .type = .integer },
+    }, ops[1].kind.change_column);
+    try testing.expectEqual(null, ops[2].kind.change_column.from);
+    try testing.expectEqualDeep(ast.ChangeColumnNull{
+        .table = "t",
+        .column = "c",
+        .null = false,
+        .default = .{ .literal = .{ .string = "none" } },
+    }, ops[3].kind.change_column_null);
+    try testing.expectEqualDeep(ast.ChangeColumnNull{ .table = "t", .column = "c", .null = true }, ops[4].kind.change_column_null);
+    try testing.expectEqualDeep(ast.ChangeColumnDefault{
+        .table = "t",
+        .column = "c",
+        .from = .{ .literal = .nil },
+        .to = .{ .named = .now },
+    }, ops[5].kind.change_column_default);
+    try testing.expectEqualDeep(ast.ChangeColumnDefault{
+        .table = "t",
+        .column = "c",
+        .from = null,
+        .to = .{ .literal = .{ .integer = 5 } },
+    }, ops[6].kind.change_column_default);
+    try testing.expectEqualDeep(ast.RenameIndex{ .table = "t", .from = "a", .to = "b" }, ops[7].kind.rename_index);
+    try testing.expectEqualDeep(ast.AddForeignKey{
+        .table = "t",
+        .column = "user_id",
+        .foreign_key = .{ .table = "users", .on_delete = .nullify },
+        .name = "t_user",
+    }, ops[8].kind.add_foreign_key);
+    try testing.expectEqualDeep(ast.RemoveForeignKey{ .table = "t", .to_table = null, .column = null, .name = "t_user" }, ops[9].kind.remove_foreign_key);
+    try testing.expectEqualDeep(ast.RemoveForeignKey{ .table = "t", .to_table = "users", .column = "user_id", .name = null }, ops[10].kind.remove_foreign_key);
+}
+
 test "execute lowers in up and down" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -365,6 +425,46 @@ test "semantic errors" {
         .{ "add_reference :t, :user, foreign_key: false, to: :people", "'to:' needs a foreign key", "to:" },
         .{ "add_reference :t, :user, foreign_key: false, on_delete: :cascade", "'on_delete:' needs a foreign key", "on_delete:" },
         .{ "remove_reference :t, :user, :bigint", "remove_reference expects 2 arguments (:table, :name), got 3", "remove_reference" },
+        // Alter operations.
+        .{ "rename_table :posts", "rename_table expects 2 arguments (:from, :to), got 1", "rename_table" },
+        .{ "rename_table :posts, \"articles\"", "rename_table expects :to to be a symbol, found a string", "\"articles\"" },
+        .{ "rename_table :a, :b {}", "rename_table takes no block", "rename_table" },
+        .{ "change_column :t, :c", "change_column expects 3 arguments (:table, :column, :type), got 2", "change_column" },
+        .{ "change_column :t, :c, :strng", "unknown column type 'strng'", ":strng" },
+        .{ "change_column :t, :c, :integer, null: false", "unknown option 'null' for change_column", "null:" },
+        .{ "change_column :t, :c, :integer, default: 0", "unknown option 'default' for change_column", "default:" },
+        .{ "change_column :t, :c, :integer, limit: 10", "'limit:' is only allowed on string columns", "limit:" },
+        .{ "change_column :t, :c, :text, from_limit: 10", "'from_limit:' needs 'from:'", "from_limit:" },
+        .{ "change_column :t, :c, :text, from_scale: 2", "'from_scale:' needs 'from:'", "from_scale:" },
+        .{ "change_column :t, :c, :text, from: \"string\"", "'from:' must be a column type such as :string", "\"string\"" },
+        .{ "change_column :t, :c, :text, from: :strng", "unknown column type 'strng'", ":strng" },
+        .{ "change_column :t, :c, :bigint, from: :integer, from_limit: 10", "'from_limit:' is only allowed on string columns", "from_limit:" },
+        .{ "change_column :t, :c, :text, from: :decimal, from_scale: 2", "'from_scale:' needs 'from_precision:'", "from_scale:" },
+        .{ "change_column :t, :c, :text, from: :decimal, from_precision: 256", "'from_precision:' must be an integer from 1 to 255", "256" },
+        .{ "change_column_null :t, :c", "change_column_null expects 3 arguments (:table, :column, true/false), got 2", "change_column_null" },
+        .{ "change_column_null :t, :c, :no", "change_column_null expects true or false, found a symbol", ":no" },
+        .{ "change_column_null :t, :c, nil", "change_column_null expects true or false, found nil", "nil" },
+        .{ "change_column_null :t, :c, true, default: 0", "change_column_null takes 'default:' only with false", "default:" },
+        .{ "change_column_null :t, :c, false, default: nil", "change_column_null cannot fill nulls with nil", "nil" },
+        .{ "change_column_null :t, :c, false, default: :today", "unknown default ':today'", ":today" },
+        .{ "change_column_null :t, :c, false, from: 0", "unknown option 'from' for change_column_null", "from:" },
+        .{ "change_column_default :t, :c", "change_column_default needs 'to:'", "change_column_default" },
+        .{ "change_column_default :t, :c, from: 0", "change_column_default needs 'to:'", "change_column_default" },
+        .{ "change_column_default :t, :c, 0", "change_column_default expects 2 arguments (:table, :column), got 3", "change_column_default" },
+        .{ "change_column_default :t, :c, to: :today", "unknown default ':today'", ":today" },
+        .{ "change_column_default :t, :c, from: :today, to: 1", "unknown default ':today'", ":today" },
+        .{ "change_column_default :t, :c, default: 1", "unknown option 'default' for change_column_default", "default:" },
+        .{ "rename_index :t, \"a\"", "rename_index expects 3 arguments (:table, \"from\", \"to\"), got 2", "rename_index" },
+        .{ "rename_index :t, :a, \"b\"", "rename_index expects \"from\" to be a string, found a symbol", ":a" },
+        .{ "rename_index :t, \"a\", :b", "rename_index expects \"to\" to be a string, found a symbol", ":b" },
+        .{ "add_foreign_key :t", "add_foreign_key expects 2 arguments (:table, :to_table), got 1", "add_foreign_key" },
+        .{ "add_foreign_key :t, :users", "add_foreign_key needs 'column:'", "add_foreign_key" },
+        .{ "add_foreign_key :t, :users, column: \"user_id\"", "'column:' must be a symbol", "\"user_id\"" },
+        .{ "add_foreign_key :t, :users, column: :user_id, on_delete: :delete", "'on_delete:' must be :cascade, :nullify or :restrict", ":delete" },
+        .{ "add_foreign_key :t, :users, column: :user_id, name: :fk", "'name:' must be a string", ":fk" },
+        .{ "add_foreign_key :t, :users, column: :user_id, to: :people", "unknown option 'to' for add_foreign_key", "to:" },
+        .{ "remove_foreign_key :t, :users", "remove_foreign_key needs 'column:' or 'name:'", "remove_foreign_key" },
+        .{ "remove_foreign_key :t, :users, :x", "remove_foreign_key expects 1 or 2 arguments (:table [, :to_table]), got 3", "remove_foreign_key" },
         // Raw SQL.
         .{ "execute \"SELECT 1\"", "execute is not allowed in 'change'; write 'up' and 'down'", "execute" },
         .{ "migration M { up { execute } down { } }", "execute expects 1 argument (\"sql\"), got 0", "execute" },

@@ -1,0 +1,5 @@
+migration M {
+  change {
+    change_column :users, :age, :bigint, null: false
+  }
+}

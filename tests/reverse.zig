@@ -91,6 +91,42 @@ test "rename_column swaps its names" {
     );
 }
 
+test "alter operations invert each other" {
+    try expectPlan(
+        \\migration M { change {
+        \\  rename_table :posts, :articles
+        \\  change_column :users, :name, :string, limit: 255, from: :string, from_limit: 100
+        \\  change_column_null :users, :role, false, default: 0
+        \\  change_column_null :users, :bio, true
+        \\  change_column_default :users, :role, from: nil, to: :now
+        \\  rename_index :users, "a", "b"
+        \\  add_foreign_key :posts, :users, column: :author_id, on_delete: :cascade, name: "fk"
+        \\  remove_foreign_key :posts, :users, column: :editor_id
+        \\} }
+    ,
+        \\migration M
+        \\  up
+        \\    rename_table posts articles
+        \\    change_column users name string limit=255 from=string from_limit=100
+        \\    change_column_null users role not_null default=0
+        \\    change_column_null users bio null
+        \\    change_column_default users role from=nil to=:now
+        \\    rename_index users "a" "b"
+        \\    add_foreign_key posts users column=author_id on_delete=cascade name="fk"
+        \\    remove_foreign_key posts users column=editor_id
+        \\  down
+        \\    add_foreign_key posts users column=editor_id
+        \\    remove_foreign_key posts users column=author_id on_delete=cascade name="fk"
+        \\    rename_index users "b" "a"
+        \\    change_column_default users role from=:now to=nil
+        \\    change_column_null users bio not_null
+        \\    change_column_null users role null
+        \\    change_column users name string limit=100 from=string from_limit=255
+        \\    rename_table articles posts
+        \\
+    );
+}
+
 test "the plan keeps transaction: false" {
     try expectPlan(
         \\migration M, transaction: false { change { rename_column :users, :login, :username } }
@@ -161,6 +197,26 @@ test "irreversible operations report their span" {
         "remove_index :users, name: \"by_email\"",
         "remove_index without a column is irreversible",
     );
+    try expectIrreversible(
+        "migration M { change { change_column :users, :bio, :text } }",
+        "change_column :users, :bio, :text",
+        "change_column without 'from:' is irreversible",
+    );
+    try expectIrreversible(
+        "migration M { change { change_column_default :users, :role, to: 1 } }",
+        "change_column_default :users, :role, to: 1",
+        "change_column_default without 'from:' is irreversible",
+    );
+    try expectIrreversible(
+        "migration M { change { remove_foreign_key :posts, name: \"fk\" } }",
+        "remove_foreign_key :posts, name: \"fk\"",
+        "remove_foreign_key without :to_table or 'column:' is irreversible",
+    );
+    try expectIrreversible(
+        "migration M { change { remove_foreign_key :posts, column: :user_id } }",
+        "remove_foreign_key :posts, column: :user_id",
+        "remove_foreign_key without :to_table or 'column:' is irreversible",
+    );
 }
 
 test "up_down passes through untouched, including irreversible operations" {
@@ -205,6 +261,13 @@ test "reversing down gives back up" {
         \\  rename_column :users, :login, :username
         \\  add_index :users, :email, unique: true
         \\  remove_index :users, :username, name: "by_username"
+        \\  rename_table :posts, :articles
+        \\  change_column :users, :age, :bigint, from: :integer
+        \\  change_column_null :users, :email, false
+        \\  change_column_default :users, :role, from: 0, to: "admin"
+        \\  rename_index :users, "a", "b"
+        \\  add_foreign_key :articles, :users, column: :author_id, on_delete: :restrict
+        \\  remove_foreign_key :articles, :users, column: :editor_id, name: "by_editor"
         \\} }
     , &diag);
     const p = try reverse.plan(arena, migration, &diag);

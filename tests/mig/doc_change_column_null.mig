@@ -1,0 +1,6 @@
+migration M {
+  change {
+    change_column_null :users, :role, false, default: 0
+    change_column_null :users, :nickname, true
+  }
+}

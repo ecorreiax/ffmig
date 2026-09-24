@@ -70,6 +70,19 @@ migration CreateUsers {
 }
 ```
 
+Later migrations evolve the schema with `rename_table`, `change_column`, `change_column_null`, `change_column_default`, `rename_index`, `add_foreign_key` and the rest of the [operations](docs/mig.md#operations). Inside `change`, ffmig derives the rollback; an operation that replaces something takes what it replaces, so the rollback can put it back:
+
+```sh
+migration WidenUserAge {
+  change {
+    change_column :users, :age, :bigint, from: :integer
+    change_column_default :users, :role, from: nil, to: "member"
+  }
+}
+```
+
+`rename_table` also renames the indexes and foreign keys that ffmig named after the table, so later migrations can keep using their default names.
+
 For what the language does not model, such as extensions, views, triggers or data backfills, write `up` and `down` blocks and use `execute` with raw SQL, usually in a `"""` multi-line string:
 
 ```sh

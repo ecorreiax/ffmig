@@ -1,0 +1,5 @@
+migration M
+  change
+    change_column users age bigint from=integer
+    change_column users name string limit=255 from=string from_limit=100
+    change_column users bio text

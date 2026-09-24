@@ -231,20 +231,28 @@ generating SQL; the file itself stays valid.
 |-----------------|---------------------------------|----------------------------------------|-------|
 | `create_table`  | `:table`                        | `id:`                                  | required: columns |
 | `drop_table`    | `:table`                        | `id:`                                  | optional: columns |
+| `rename_table`  | `:from, :to`                    | none                                   | none  |
 | `add_column`    | `:table, :column, :type`        | column options                         | none  |
 | `remove_column` | `:table, :column [, :type]`     | column options (only with `:type`)     | none  |
 | `rename_column` | `:table, :from, :to`            | none                                   | none  |
+| `change_column` | `:table, :column, :type`        | `limit:`, `precision:`, `scale:`, `from:`, `from_limit:`, `from_precision:`, `from_scale:` | none |
+| `change_column_null` | `:table, :column, true/false` | `default:`                          | none  |
+| `change_column_default` | `:table, :column`        | `to:` (required), `from:`              | none  |
 | `add_index`     | `:table, :column`               | `unique:`, `name:`                     | none  |
 | `remove_index`  | `:table [, :column]`            | `unique:`, `name:`                     | none  |
+| `rename_index`  | `:table, "from", "to"`          | none                                   | none  |
 | `add_reference` | `:table, :name`                 | reference options                      | none  |
 | `remove_reference` | `:table, :name`              | reference options                      | none  |
+| `add_foreign_key` | `:table, :to_table`           | `column:` (required), `on_delete:`, `name:` | none |
+| `remove_foreign_key` | `:table [, :to_table]`     | `column:`, `on_delete:`, `name:`       | none  |
 | `execute`       | `"sql"`                         | `dialect:`                             | none  |
 
 Common rules:
 
-- Positional arguments are symbols, except `execute`'s SQL. Table,
-  column and type names are never strings: `add_column "users", ...` is
-  an error.
+- Positional arguments are symbols, except `execute`'s SQL,
+  `rename_index`'s index names (strings, like `name:`) and
+  `change_column_null`'s `true` or `false`. Table, column and type names
+  are never strings: `add_column "users", ...` is an error.
 - The number of positional arguments must match exactly, e.g.
   `add_column expects 3 arguments (:table, :column, :type), got 2`.
 - An option not listed for an operation is an error
@@ -270,6 +278,37 @@ create_table :users, id: :uuid {
   table was created with makes the drop reversible, because the undo step
   can recreate the table. Without a block it is irreversible.
 
+### `rename_table`
+
+```
+rename_table :posts, :articles
+```
+
+- Renames the table, and with it the names that were made from its name,
+  so that it looks as if it had been created as `:to`:
+
+  | Before                      | After                          |
+  |-----------------------------|--------------------------------|
+  | `index_posts_on_<column>`   | `index_articles_on_<column>`   |
+  | `fk_posts_on_<column>`      | `fk_articles_on_<column>`      |
+  | `posts_pkey` (PostgreSQL's primary key) | `articles_pkey`    |
+  | `posts_id_seq` (PostgreSQL's `id` sequence) | `articles_id_seq` |
+
+  Operations that compute a default name, such as
+  `remove_index :articles, :title` and `remove_reference :articles, :user`,
+  then find it. Indexes and foreign keys with a custom `name:` keep it.
+- ffmig checks each file on its own and cannot know which of these exist,
+  so the database looks them up when the migration runs. In PostgreSQL,
+  the `ALTER TABLE ... RENAME TO` is followed by a `DO` block that reads
+  the catalog and renames each one; both are sent as one statement, so
+  they apply together even with `transaction: false`.
+- A new name longer than the database allows (63 bytes in PostgreSQL) is
+  an error that names it
+  (`cannot rename index_posts_on_user_id to index_..._on_user_id: longer than 63 bytes`),
+  and the rename is undone.
+- Foreign keys on other tables that point at the renamed one are named
+  after their own table, so they keep their names.
+
 ### `add_column` / `remove_column`
 
 ```
@@ -289,6 +328,76 @@ remove_column :users, :role
 ```
 rename_column :users, :name, :full_name
 ```
+
+### `change_column`
+
+```
+change_column :users, :age, :bigint, from: :integer
+change_column :users, :name, :string, limit: 255, from: :string, from_limit: 100
+change_column :users, :bio, :text
+```
+
+- Changes the column's type to `:type`, a [column type](#column-types)
+  written as a symbol. `limit:`, `precision:` and `scale:` follow the
+  rules in [Column options](#column-options). It changes only the type:
+  the column keeps its nullability and default, which
+  [`change_column_null`](#change_column_null) and
+  [`change_column_default`](#change_column_default) change
+  (`unknown option 'null' for change_column`).
+- `from:` is the type before the change, as a symbol, and `from_limit:`,
+  `from_precision:` and `from_scale:` are its size options, by the same
+  rules (`'from_limit:' is only allowed on string columns`). They describe
+  the old type so that the undo can restore it, like `remove_column`'s
+  type, which makes `change_column` reversible. Without `from:` it is
+  irreversible, and the `from_` options are an error
+  (`'from_limit:' needs 'from:'`).
+- The database converts the values already in the column, and the
+  column's default. PostgreSQL does it when the old type converts to the
+  new one implicitly or by assignment (`integer` to `bigint`, `string` to
+  `text`, a longer or shorter `limit:`, which fails on a value that no
+  longer fits); otherwise it refuses
+  (`column "age" cannot be cast automatically to type integer`). There is
+  no `using:` option, since that would be SQL inside `change`: write such
+  a change in `up` / `down` with [`execute`](#raw-sql), e.g.
+  `execute "ALTER TABLE users ALTER COLUMN age TYPE integer USING age::integer"`.
+
+### `change_column_null`
+
+```
+change_column_null :users, :role, false, default: 0
+change_column_null :users, :nickname, true
+```
+
+- The third argument is `true` to allow nulls or `false` to forbid them,
+  written as is (`change_column_null expects true or false, found a symbol`).
+- `default:` first sets the column to that value in every row where it is
+  null, so that forbidding nulls does not fail on rows already there. It
+  takes a literal or a named default, as in
+  [Column defaults](#column-defaults), except `nil`
+  (`change_column_null cannot fill nulls with nil`), and only with
+  `false` (`change_column_null takes 'default:' only with false`). It does
+  not become the column's default; `change_column_default` sets that.
+  ffmig does not know the column's type here, so the database checks that
+  the value fits.
+- The undo flips `true` and `false`. It does not put the nulls back.
+
+### `change_column_default`
+
+```
+change_column_default :users, :role, from: 0, to: 1
+change_column_default :posts, :published_at, from: nil, to: :now
+change_column_default :users, :role, to: nil
+```
+
+- `to:` is the new default and is required
+  (`change_column_default needs 'to:'`). `from:` is the default before
+  the change. Each is a literal or a named default, as in
+  [Column defaults](#column-defaults), or `nil` for no default.
+- With `from:`, the undo sets the `from:` default back. Without it, the
+  change is irreversible.
+- ffmig does not know the column's type here, so it does not check that
+  the value fits (`to: "x"` on an `integer` column); the database does.
+  A named default must still be a known name (`unknown default ':today'`).
 
 ### `add_index` / `remove_index`
 
@@ -311,6 +420,17 @@ remove_index :users, name: "users_email_key"
   removed, like `remove_column` does with a type. See
   [Reversibility](#reversibility).
 
+### `rename_index`
+
+```
+rename_index :users, "index_users_on_email", "users_email_key"
+```
+
+- The index names are strings, like `name:` on `add_index`
+  (`rename_index expects "from" to be a string, found a symbol`).
+- PostgreSQL does not need the table, but other databases name indexes
+  per table, so it is always given.
+
 ### `add_reference` / `remove_reference`
 
 ```
@@ -325,6 +445,32 @@ remove_reference :posts, :user, null: false, on_delete: :cascade
   index with it. It lowers to a `remove_column` that describes the column.
   Every reference option has a default, so it is always reversible: the
   undo recreates the reference exactly as written, like `remove_index`.
+
+### `add_foreign_key` / `remove_foreign_key`
+
+```
+add_foreign_key :posts, :users, column: :author_id, on_delete: :cascade
+remove_foreign_key :posts, :users, column: :author_id, on_delete: :cascade
+remove_foreign_key :posts, name: "posts_author_fkey"
+```
+
+- `add_foreign_key :table, :to_table` makes `column:` of `:table` point
+  at `:to_table`'s `id`: the foreign key of a
+  [reference](#references), for a column that already exists. It adds no
+  column and no index.
+- `column:` is a symbol and is required
+  (`add_foreign_key needs 'column:'`): ffmig does not guess it from the
+  table name.
+- `on_delete:` is as in [Reference options](#reference-options). ffmig
+  does not see the column here, so it cannot reject `:nullify` on a
+  `null: false` column; the database then refuses the delete.
+- `name:` is a string. When absent, the foreign key is named
+  `fk_<table>_on_<column>` (`fk_posts_on_author_id`), like a reference's.
+- `remove_foreign_key` needs `column:`, `name:`, or both
+  (`remove_foreign_key needs 'column:' or 'name:'`), like `remove_index`.
+  It accepts `:to_table` and `on_delete:` so that it can describe the
+  foreign key being removed: with `:to_table` and `column:` it is
+  reversible, and the undo recreates the foreign key as written.
 
 ## Raw SQL
 
@@ -511,8 +657,19 @@ CREATE INDEX "index_sessions_on_user_id" ON "sessions" ("user_id");
 
 Two tables that point at each other cannot both be created with
 `references`, since the second does not exist yet when the first is
-created. That needs a separate foreign key operation, which the language
-does not have yet.
+created. Create the first one's reference without a foreign key, and add
+it with [`add_foreign_key`](#add_foreign_key--remove_foreign_key) once the
+second exists:
+
+```
+create_table :users {
+  references :team, foreign_key: false
+}
+create_table :teams {
+  references :owner, to: :users
+}
+add_foreign_key :users, :teams, column: :team_id
+```
 
 ## Column defaults
 
@@ -558,9 +715,10 @@ dialect translates it to its own SQL, so the file stays portable.
 
 More names (e.g. `:uuid`) can be added later by extending this table.
 
-Defaults written in SQL are not part of the language. An `up` / `down`
-migration can set one with [`execute`](#raw-sql)
-(`ALTER TABLE ... ALTER COLUMN ... SET DEFAULT ...`).
+[`change_column_default`](#change_column_default) changes an existing
+column's default to a literal or a named one. Defaults written in SQL are
+not part of the language. An `up` / `down` migration can set one with
+[`execute`](#raw-sql) (`ALTER TABLE ... ALTER COLUMN ... SET DEFAULT ...`).
 
 ## Reversibility
 
@@ -576,12 +734,23 @@ everything needed to undo it:
 | `add_column :t, :c, :type, opts`     | `remove_column :t, :c, :type, opts`      |
 | `remove_column :t, :c, :type, opts`  | `add_column :t, :c, :type, opts`         |
 | `remove_column :t, :c`               | **irreversible**                         |
+| `rename_table :a, :b`                | `rename_table :b, :a`                    |
 | `rename_column :t, :a, :b`           | `rename_column :t, :b, :a`               |
+| `change_column :t, :c, :new, opts, from: :old, from_opts` | `change_column :t, :c, :old, opts, from: :new, from_opts` (the sizes swapped too) |
+| `change_column :t, :c, :type, opts`  | **irreversible**                         |
+| `change_column_null :t, :c, false, default: v` | `change_column_null :t, :c, true` |
+| `change_column_null :t, :c, true`    | `change_column_null :t, :c, false`       |
+| `change_column_default :t, :c, from: a, to: b` | `change_column_default :t, :c, from: b, to: a` |
+| `change_column_default :t, :c, to: b` | **irreversible**                        |
 | `add_index :t, :c, opts`             | `remove_index :t, :c, opts`              |
 | `remove_index :t, :c, opts`          | `add_index :t, :c, opts`                 |
 | `remove_index :t, name: "n"`         | **irreversible**                         |
+| `rename_index :t, "a", "b"`          | `rename_index :t, "b", "a"`              |
 | `add_reference :t, :name, opts`      | `remove_reference :t, :name, opts`       |
 | `remove_reference :t, :name, opts`   | `add_reference :t, :name, opts`          |
+| `add_foreign_key :t, :u, opts`       | `remove_foreign_key :t, :u, opts`        |
+| `remove_foreign_key :t, :u, column: :c, opts` | `add_foreign_key :t, :u, column: :c, opts` |
+| `remove_foreign_key :t, name: "n"`   | **irreversible**                         |
 | `execute "sql"`                      | not allowed in `change`                  |
 
 `remove_index` and `unique:`: `remove_index` accepts `unique:` and is
@@ -669,6 +838,21 @@ Each of these is rejected; the message is what `ffmig check` reports.
 | `add_reference :t, :user, null: false, on_delete: :nullify` | `on_delete: :nullify on non-null column 'user_id'` |
 | `add_reference :t, :user, foreign_key: false, to: :people` | `'to:' needs a foreign key` |
 | `create_table :t, id: :integer { }`                 | `id:` must be `:bigint`, `:uuid` or `false` |
+| `rename_table :posts`                               | `rename_table expects 2 arguments (:from, :to), got 1` |
+| `change_column :users, :age, :bigint, null: false`  | `unknown option 'null' for change_column` |
+| `change_column :users, :name, :text, from_limit: 100` | `'from_limit:' needs 'from:'` |
+| `change_column :users, :name, :text, from: "string"` | `'from:' must be a column type such as :string` |
+| `change_column :users, :age, :bigint, from: :integer, from_limit: 10` | `'from_limit:' is only allowed on string columns` |
+| `change_column_null :users, :role, :no`             | `change_column_null expects true or false, found a symbol` |
+| `change_column_null :users, :role, true, default: 0` | `change_column_null takes 'default:' only with false` |
+| `change_column_null :users, :role, false, default: nil` | `change_column_null cannot fill nulls with nil` |
+| `change_column_default :users, :role, from: 0`      | `change_column_default needs 'to:'` |
+| `change_column_default :users, :role, to: :today`   | `unknown default ':today'` |
+| `rename_index :users, :a, :b`                       | `rename_index expects "from" to be a string, found a symbol` |
+| `add_foreign_key :posts, :users`                    | `add_foreign_key needs 'column:'` |
+| `add_foreign_key :posts, :users, column: "author_id"` | `'column:' must be a symbol` |
+| `add_foreign_key :posts, :users, column: :author_id, on_delete: :delete` | `'on_delete:' must be :cascade, :nullify or :restrict` |
+| `remove_foreign_key :posts, :users`                 | `remove_foreign_key needs 'column:' or 'name:'` |
 | `execute "CREATE EXTENSION pgcrypto"`               | `execute is not allowed in 'change'; write 'up' and 'down'` |
 | `execute` (inside `up`)                             | `execute expects 1 argument ("sql"), got 0` |
 | `execute :users` (inside `up`)                      | `execute expects "sql" to be a string, found a symbol` |
