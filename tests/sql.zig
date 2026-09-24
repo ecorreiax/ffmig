@@ -87,6 +87,18 @@ test "postgres lock statements" {
     , out.written());
 }
 
+test "postgres timeout statements" {
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try sql.writeTimeout(.postgres, .{ .lock = 5000 }, &out.writer);
+    try out.writer.writeAll(";\n");
+    try sql.writeTimeout(.postgres, .{ .statement = 0 }, &out.writer);
+    try testing.expectEqualStrings(
+        \\SET lock_timeout = '5000ms';
+        \\SET statement_timeout = '0ms'
+    , out.written());
+}
+
 /// Golden cases: each `<case>.mig` has a `<case>.<dialect>.sql` per
 /// dialect with the SQL for its `up` plan, then for its `down` plan (or
 /// the reason it has none). Read at test time from the project root.

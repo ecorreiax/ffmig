@@ -4,10 +4,11 @@
 //! in `schema_migrations`. Every pending file is parsed and checked before
 //! anything runs, so a broken file never leaves half a batch applied.
 //! Each migration runs in its own transaction together with the insert of
-//! its version; a failure stops the batch and keeps what already ran.
-//! The whole run holds the migration lock, so a concurrent `migrate` or
-//! `rollback` on the same database waits for it (up to `--lock-wait`
-//! seconds) and then sees what this one applied.
+//! its version, unless it has `transaction: false`; a failure stops the
+//! batch and keeps what already ran. The `[migration]` timeouts in
+//! `ffmig.toml` are set first. The whole run holds the migration lock, so
+//! a concurrent `migrate` or `rollback` on the same database waits for it
+//! (up to `--lock-wait` seconds) and then sees what this one applied.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -62,7 +63,9 @@ pub fn migrate(
     out: *Writer,
     err: *Writer,
 ) Writer.Error!u8 {
-    if (!try migrations.lock(env.io, arena, conn, options.lock_wait, err)) {
+    if (!try migrations.setTimeouts(arena, conn, project.timeouts, err) or
+        !try migrations.lock(env.io, arena, conn, options.lock_wait, err))
+    {
         try err.writeAll("ffmig: nothing was migrated\n");
         return 1;
     }
@@ -95,7 +98,7 @@ pub fn migrate(
             .change => |ops| ops,
             .up_down => |b| b.up,
         };
-        if (!try migrations.apply(arena, conn, p.path, ops, .{ .insert = p.file.version }, err)) return 1;
+        if (!try migrations.apply(arena, conn, p.path, ops, .{ .insert = p.file.version }, p.migration.transaction, err)) return 1;
         try out.print("Migrated {s}\n", .{p.path});
     }
     return 0;

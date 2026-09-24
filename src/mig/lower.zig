@@ -18,13 +18,15 @@ pub const Error = error{ InvalidMigration, OutOfMemory };
 /// names are slices of the source `file` was parsed from.
 pub fn lower(arena: Allocator, file: syntax.File, diag: *Diagnostic) Error!ast.Migration {
     var l: Lowerer = .{ .arena = arena, .diag = diag };
-    return .{ .name = file.name, .body = try l.lowerBody(file.sections) };
+    const transaction = try l.lowerTransaction(file);
+    return .{ .name = file.name, .transaction = transaction, .body = try l.lowerBody(file.sections) };
 }
 
 /// The operations a section may hold. `add_reference` and
 /// `remove_reference` lower to `add_column` and `remove_column`.
 const OpName = enum { create_table, drop_table, add_column, remove_column, rename_column, add_index, remove_index, add_reference, remove_reference };
 
+const migration_options = [_][]const u8{"transaction"};
 const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale" };
 const index_options = [_][]const u8{ "unique", "name" };
 const reference_options = [_][]const u8{ "type", "to", "null", "foreign_key", "index", "on_delete" };
@@ -32,6 +34,15 @@ const reference_options = [_][]const u8{ "type", "to", "null", "foreign_key", "i
 const Lowerer = struct {
     arena: Allocator,
     diag: *Diagnostic,
+
+    /// The options after the migration name: only `transaction:`.
+    fn lowerTransaction(l: *Lowerer, file: syntax.File) Error!bool {
+        if (file.args.len > 0) {
+            return l.fail(file.args[0].span, "migration takes only options, such as 'transaction: false'", .{});
+        }
+        try l.checkOptionsOf("migration", file.options, &migration_options);
+        return try l.optionBool(file.options, "transaction") orelse true;
+    }
 
     /// Exactly `change`, or exactly one `up` plus one `down`, in either order.
     fn lowerBody(l: *Lowerer, sections: []const syntax.Section) Error!ast.Body {
@@ -392,11 +403,16 @@ const Lowerer = struct {
 
     /// Rejects option keys not in `allowed`, and keys given more than once.
     fn checkOptions(l: *Lowerer, call: syntax.Call, allowed: []const []const u8) Error!void {
-        for (call.options, 0..) |opt, i| {
+        return l.checkOptionsOf(call.name, call.options, allowed);
+    }
+
+    /// `checkOptions` for the `options` of `what`, which names it in errors.
+    fn checkOptionsOf(l: *Lowerer, what: []const u8, options: []const syntax.Option, allowed: []const []const u8) Error!void {
+        for (options, 0..) |opt, i| {
             for (allowed) |key| {
                 if (std.mem.eql(u8, opt.key, key)) break;
-            } else return l.fail(labelSpan(opt), "unknown option '{s}' for {s}", .{ opt.key, call.name });
-            if (findOption(call.options[0..i], opt.key) != null) {
+            } else return l.fail(labelSpan(opt), "unknown option '{s}' for {s}", .{ opt.key, what });
+            if (findOption(options[0..i], opt.key) != null) {
                 return l.fail(labelSpan(opt), "option '{s}:' given twice", .{opt.key});
             }
         }

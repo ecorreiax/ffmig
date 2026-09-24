@@ -16,7 +16,7 @@ fn expectPlan(source: []const u8, expected: []const u8) !void {
     const p = try reverse.plan(arena, migration, &diag);
 
     var actual: std.Io.Writer.Allocating = .init(arena);
-    try mig.print.plan(&actual.writer, migration.name, p);
+    try mig.print.plan(&actual.writer, migration, p);
     try testing.expectEqualStrings(expected, actual.written());
 }
 
@@ -83,6 +83,19 @@ test "rename_column swaps its names" {
         \\migration M { change { rename_column :users, :login, :username } }
     ,
         \\migration M
+        \\  up
+        \\    rename_column users login username
+        \\  down
+        \\    rename_column users username login
+        \\
+    );
+}
+
+test "the plan keeps transaction: false" {
+    try expectPlan(
+        \\migration M, transaction: false { change { rename_column :users, :login, :username } }
+    ,
+        \\migration M transaction=false
         \\  up
         \\    rename_column users login username
         \\  down

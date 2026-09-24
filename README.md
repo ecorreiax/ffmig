@@ -27,6 +27,9 @@ This creates a `migrations/` directory and an `ffmig.toml`:
 ```toml
 [migration]
 path = "migrations"
+# Fail a migration that waits longer than this for a lock, instead of
+# blocking every query queued behind it:
+# lock_timeout = "5s"
 
 [database]
 url = "${DATABASE_URL}"
@@ -74,6 +77,10 @@ ffmig migrate
 ```
 
 Applied versions are recorded in a `schema_migrations` table. `migrate` checks every pending file before it runs anything, so a broken file never leaves a batch half-applied. Each migration runs in its own transaction.
+
+Some statements, such as PostgreSQL's `CREATE INDEX CONCURRENTLY`, cannot run inside a transaction. A migration that needs them starts with `migration AddSlugIndex, transaction: false {`. If one of its statements fails, the ones before it are not undone and the migration stays pending, so keep such migrations small (see [Transactions](docs/mig.md#transactions)).
+
+A migration that waits for a lock, say behind a long query on the table it alters, also blocks every query queued behind it. `lock_timeout` in `[migration]` makes it fail instead, and `statement_timeout` limits how long any one statement may run. Both take a duration such as `"5s"`, `"500ms"`, `"2min"` or `"0"` for no limit. When they are unset, the database server's settings apply.
 
 `migrate` and `rollback` hold a lock on the database while they run, so several deploys starting at once apply each migration exactly once: the others wait, then find nothing left to do. A run gives up after 60 seconds of waiting; `--lock-wait <seconds>` changes that, and `--lock-wait 0` does not wait at all. `status` never waits.
 

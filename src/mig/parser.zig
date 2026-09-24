@@ -55,6 +55,12 @@ const Parser = struct {
         if (p.current.tag != .ident) return p.expected("a migration name", .{});
         const name = p.current.span;
         try p.advance();
+        var args: Args = .{};
+        if (p.current.tag == .comma) {
+            try p.advance();
+            if (!canStartArg(p.current.tag)) return p.expected("an argument after ','", .{});
+            args = try p.parseArgs();
+        } else if (canStartArg(p.current.tag)) return p.expected("',' after migration name", .{});
         try p.expect(.l_brace, "'{{' after migration name", .{});
 
         var sections: std.ArrayList(syntax.Section) = .empty;
@@ -72,6 +78,8 @@ const Parser = struct {
         return .{
             .name = name.slice(p.source),
             .name_span = name,
+            .args = args.args,
+            .options = args.options,
             .sections = try sections.toOwnedSlice(p.arena),
             .span = .{ .start = start.start, .end = p.prev_end },
         };
@@ -113,14 +121,37 @@ const Parser = struct {
         return calls.toOwnedSlice(p.arena);
     }
 
-    /// `IDENT [ arg { "," arg } ] [ block ]`
+    /// `IDENT [ args ] [ block ]`
     fn parseCall(p: *Parser) Error!syntax.Call {
         const name = p.current.span;
         try p.advance();
 
+        const args: Args = if (canStartArg(p.current.tag)) try p.parseArgs() else .{};
+        // Only a comma continues an argument list, so a value here is a missing comma.
+        if (canStartArg(p.current.tag)) return p.expected("',' or a new line", .{});
+
+        var block: ?[]syntax.Call = null;
+        if (p.current.tag == .l_brace) {
+            try p.advance();
+            block = try p.parseBlock(name);
+        }
+        return .{
+            .name = name.slice(p.source),
+            .name_span = name,
+            .args = args.args,
+            .options = args.options,
+            .block = block,
+            .span = .{ .start = name.start, .end = p.prev_end },
+        };
+    }
+
+    const Args = struct { args: []syntax.Value = &.{}, options: []syntax.Option = &.{} };
+
+    /// `arg { "," arg }`, starting at a token that satisfies `canStartArg`.
+    fn parseArgs(p: *Parser) Error!Args {
         var args: std.ArrayList(syntax.Value) = .empty;
         var options: std.ArrayList(syntax.Option) = .empty;
-        if (canStartArg(p.current.tag)) while (true) {
+        while (true) {
             if (p.current.tag == .label) {
                 const key = p.current.span;
                 try p.advance();
@@ -135,23 +166,8 @@ const Parser = struct {
             if (p.current.tag != .comma) break;
             try p.advance();
             if (!canStartArg(p.current.tag)) return p.expected("an argument after ','", .{});
-        };
-        // Only a comma continues an argument list, so a value here is a missing comma.
-        if (canStartArg(p.current.tag)) return p.expected("',' or a new line", .{});
-
-        var block: ?[]syntax.Call = null;
-        if (p.current.tag == .l_brace) {
-            try p.advance();
-            block = try p.parseBlock(name);
         }
-        return .{
-            .name = name.slice(p.source),
-            .name_span = name,
-            .args = try args.toOwnedSlice(p.arena),
-            .options = try options.toOwnedSlice(p.arena),
-            .block = block,
-            .span = .{ .start = name.start, .end = p.prev_end },
-        };
+        return .{ .args = try args.toOwnedSlice(p.arena), .options = try options.toOwnedSlice(p.arena) };
     }
 
     /// Parses the current token, which must satisfy `isValue`.

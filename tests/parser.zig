@@ -137,6 +137,25 @@ test "values" {
     try testing.expectEqual(false, call.options[1].value.kind.boolean);
 }
 
+test "arguments after the migration name" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+
+    var file = try parse(arena.allocator(), "migration M { change { } }", &diag);
+    try testing.expectEqual(0, file.args.len);
+    try testing.expectEqual(0, file.options.len);
+
+    const source = "migration M, :x, transaction: false { change { } }";
+    file = try parse(arena.allocator(), source, &diag);
+    try testing.expectEqualStrings("M", file.name);
+    try expectSymbol("x", file.args[0]);
+    try testing.expectEqualStrings("transaction", file.options[0].key);
+    try testing.expectEqual(false, file.options[0].value.kind.boolean);
+    try testing.expectEqualStrings("transaction", file.options[0].key_span.slice(source));
+    try testing.expectEqual(1, file.sections.len);
+}
+
 test "duplicate options are kept" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -153,6 +172,10 @@ test "syntax errors" {
         .{ "", "expected 'migration', found end of file", "" },
         .{ "migration {", "expected a migration name, found '{'", "{" },
         .{ "migration M change", "expected '{' after migration name, found 'change'", "change" },
+        .{ "migration M transaction: false { }", "expected ',' after migration name, found 'transaction:'", "transaction:" },
+        .{ "migration M, { }", "expected an argument after ',', found '{'", "{" },
+        .{ "migration M, transaction: false change", "expected '{' after migration name, found 'change'", "change" },
+        .{ "migration M, a: 1 b: 2 { }", "expected '{' after migration name, found 'b:'", "b:" },
         .{ "migration M { create_table :t {} }", "expected 'change', 'up' or 'down', found 'create_table'", "create_table" },
         .{ "migration M { }", "expected 'change', 'up' or 'down', found '}'", "}" },
         .{ "migration M { change {} :x }", "expected 'change', 'up' or 'down', found ':x'", ":x" },

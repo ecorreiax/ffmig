@@ -115,6 +115,24 @@ pub fn writeLock(dialect: Dialect, l: Lock, w: *Writer) Writer.Error!void {
     }
 }
 
+/// A session setting that bounds how long each statement of `migrate`
+/// and `rollback` may wait or run. Values are milliseconds, 0 for no
+/// limit.
+pub const Timeout = union(enum) {
+    /// Waiting for a lock on a table or row.
+    lock: u32,
+    /// Running, waiting included.
+    statement: u32,
+};
+
+/// Writes the statement that sets one timeout for the rest of the
+/// session, without a trailing `;`.
+pub fn writeTimeout(dialect: Dialect, t: Timeout, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try postgres.timeout(w, t),
+    }
+}
+
 /// A statement that acts on a whole database, run by `create`, `drop`,
 /// `protect` and `unprotect` from the maintenance database.
 pub const Database = union(enum) {

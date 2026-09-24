@@ -1,0 +1,5 @@
+migration AddSlugIndex, transaction: true {
+  change {
+    add_index :posts, :slug, unique: true
+  }
+}

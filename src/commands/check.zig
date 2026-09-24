@@ -141,7 +141,7 @@ fn checkFile(
         },
     };
     if (opts.down and plan != null) {
-        try mig.print.plan(out, migration.name, plan.?);
+        try mig.print.plan(out, migration, plan.?);
     } else if (opts.ast or opts.down) {
         try mig.print.migration(out, migration);
     }

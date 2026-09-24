@@ -63,6 +63,17 @@ const Fixture = struct {
         };
     }
 
+    /// Rewrites `ffmig.toml` with `extra` added to its `[migration]`
+    /// section.
+    fn configure(f: *Fixture, extra: []const u8) !void {
+        const data = try std.mem.concat(f.arena_state.allocator(), u8, &.{
+            "[migration]\npath = \"db\"\n",
+            extra,
+            "\n[database]\nurl = \"${DATABASE_URL}\"\n",
+        });
+        try f.tmp.dir.writeFile(testing.io, .{ .sub_path = config.file_name, .data = data });
+    }
+
     fn deinit(f: *Fixture) void {
         f.conn.close();
         f.tmp.cleanup();
@@ -438,4 +449,90 @@ test "concurrent migrates apply each migration once" {
     const second_won = std.mem.eql(u8, rb.out.written(), migrated) and std.mem.eql(u8, ra.out.written(), nothing);
     try testing.expect(first_won != second_won);
     try f.expectVersions("20260101000000,20260102000000");
+}
+
+test "transaction: false keeps what ran before a failure" {
+    const bad = [2][]const u8{
+        "20260102000000_bad.mig",
+        \\migration Bad, transaction: false {
+        \\  change {
+        \\    add_column :users, :role, :integer
+        \\    add_index :users, :missing
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("no_transaction", &.{ create_users, bad });
+    defer f.deinit();
+
+    try f.expectRun(&.{"migrate"}, 1, "Migrated db/20260101000000_create_users.mig\n",
+        \\ffmig: db/20260102000000_bad.mig: column "missing" does not exist
+        \\while running:
+        \\CREATE INDEX "index_users_on_missing" ON "users" ("missing");
+        \\ffmig: db/20260102000000_bad.mig runs without a transaction, so the statements before this one were not undone
+        \\
+    );
+    // Unlike "a failing migration rolls back only itself", the column stays.
+    try f.expectColumns("users", "id,email,role");
+    try f.expectVersions("20260101000000");
+}
+
+test "transaction: false migrates and rolls back" {
+    const add_slug = [2][]const u8{
+        "20260102000000_add_slug.mig",
+        \\migration AddSlug, transaction: false {
+        \\  change {
+        \\    add_column :users, :slug, :string
+        \\    add_index :users, :slug, unique: true
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("no_transaction_ok", &.{ create_users, add_slug });
+    defer f.deinit();
+
+    try f.expectRun(&.{"migrate"}, 0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_slug.mig
+        \\
+    , "");
+    try f.expectColumns("users", "id,email,slug");
+    try f.expectVersions("20260101000000,20260102000000");
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_add_slug.mig\n", "");
+    try f.expectColumns("users", "id,email");
+    try f.expectVersions("20260101000000");
+}
+
+test "lock_timeout and statement_timeout stop a blocked migration" {
+    var f: Fixture = try .init("timeouts", &.{create_users});
+    defer f.deinit();
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101000000_create_users.mig\n", "");
+
+    // Another session holds a lock that add_role's ALTER TABLE waits for.
+    try exec(f.conn, "BEGIN");
+    try exec(f.conn, "LOCK TABLE users IN ACCESS EXCLUSIVE MODE");
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "db/" ++ add_role[0], .data = add_role[1] });
+
+    const blocked =
+        \\while running:
+        \\ALTER TABLE "users" ADD COLUMN "role" integer;
+        \\
+    ;
+    try f.configure("lock_timeout = \"100ms\"\n");
+    try f.expectRun(&.{"migrate"}, 1, "", "ffmig: db/20260102000000_add_role.mig: canceling statement due to lock timeout\n" ++ blocked);
+    try f.configure("statement_timeout = \"100ms\"\n");
+    try f.expectRun(&.{"migrate"}, 1, "", "ffmig: db/20260102000000_add_role.mig: canceling statement due to statement timeout\n" ++ blocked);
+    try f.expectColumns("users", "id,email");
+    try f.expectVersions("20260101000000");
+
+    // Once the lock is gone, the same settings let it through.
+    try exec(f.conn, "COMMIT");
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_add_role.mig\n", "");
+    try f.expectColumns("users", "id,email,role");
+
+    try f.configure("lock_timeout = \"soon\"\n");
+    try f.expectRun(&.{"rollback"}, 1, "",
+        \\ffmig: ffmig.toml:3: lock_timeout must be a duration such as "5s" or "500ms", or "0" for no limit
+        \\
+    );
 }

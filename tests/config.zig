@@ -18,6 +18,9 @@ test "parses the init template" {
     try expectParse(
         \\[migration]
         \\path = "db/migrations"
+        \\# Fail a migration that waits longer than this for a lock, instead of
+        \\# blocking every query queued behind it:
+        \\# lock_timeout = "5s"
         \\
         \\[database]
         \\url = "${DATABASE_URL}"
@@ -41,6 +44,62 @@ test "handles comments, escapes and literal strings" {
 
 test "ignores keys in other sections" {
     try expectParse("path = \"nope\"\n[other]\npath = \"nope\"\n", default_path, null);
+}
+
+test "reads the timeouts in milliseconds" {
+    var diag: Diagnostics = .{};
+    var c = try parse(testing.allocator,
+        \\[migration]
+        \\# lock_timeout = "1h"
+        \\lock_timeout = "5s"
+        \\statement_timeout = '0' # no limit
+        \\
+    , &diag);
+    try testing.expectEqual(5000, c.timeouts.lock.?);
+    try testing.expectEqual(0, c.timeouts.statement.?);
+    c.deinit(testing.allocator);
+
+    // Unset by default, and only read from [migration].
+    c = try parse(testing.allocator, "[database]\nlock_timeout = \"nope\"\n", &diag);
+    defer c.deinit(testing.allocator);
+    try testing.expectEqual(config.Timeouts{}, c.timeouts);
+}
+
+test "rejects a timeout that is not a duration" {
+    var diag: Diagnostics = .{};
+    try testing.expectError(error.InvalidTimeout, parse(testing.allocator, "[migration]\npath = \"db\"\nstatement_timeout = \"5\"\n", &diag));
+    try testing.expectEqual(3, diag.line);
+    try testing.expectEqualStrings("statement_timeout", diag.key);
+    try testing.expectError(error.InvalidSyntax, parse(testing.allocator, "[migration]\nlock_timeout = 5s\n", &diag));
+    try testing.expectEqual(2, diag.line);
+}
+
+test "parseDuration" {
+    const cases = [_]struct { []const u8, ?u32 }{
+        .{ "0", 0 },
+        .{ "0s", 0 },
+        .{ "250ms", 250 },
+        .{ "5s", 5000 },
+        .{ "2min", 120_000 },
+        .{ "1h", 3_600_000 },
+        .{ "596h", 2_145_600_000 },
+        // Past 2^31 - 1 ms.
+        .{ "597h", null },
+        .{ "99999999999999999999h", null },
+        // A unit is required, except for 0.
+        .{ "5", null },
+        .{ "", null },
+        .{ "s", null },
+        .{ "5 s", null },
+        .{ "1.5s", null },
+        .{ "-1s", null },
+        .{ "5m", null },
+        .{ "5S", null },
+    };
+    for (cases) |c| {
+        errdefer std.debug.print("duration: \"{s}\"\n", .{c[0]});
+        try testing.expectEqual(c[1], config.parseDuration(c[0]));
+    }
 }
 
 test "reports the line of a syntax error" {

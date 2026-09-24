@@ -49,7 +49,7 @@ migration AddRoleToUsers {
 
 ```
 file       = migration EOF ;
-migration  = "migration" IDENT "{" body "}" ;
+migration  = "migration" IDENT [ "," args ] "{" body "}" ;
 body       = section { section } ;          (* change | up, down *)
 section    = ( "change" | "up" | "down" ) "{" { call } "}" ;
 call       = IDENT [ args ] [ block ] ;
@@ -66,6 +66,9 @@ Syntax rules beyond the EBNF:
 - No trailing comma: `add_index :users, :email,` is an error.
 - A file holds exactly one migration. Anything after its closing `}`
   other than comments is an error.
+- Arguments after the migration name follow a comma, like a call's:
+  `migration M, transaction: false {`. Lowering accepts only the options
+  in [Transactions](#transactions).
 - The migration name is any `IDENT`. `ffmig new` writes the PascalCase
   form of the file name (`20260923140512_create_users.mig` →
   `CreateUsers`), but the name is not checked against the file name.
@@ -126,6 +129,42 @@ migration BackfillSlugs {
 The statements directly inside a section are operations. Column
 statements (`string :name`, `timestamps`) are only valid inside a table
 block, so `string :name` inside `change` is `unknown operation 'string'`.
+
+## Transactions
+
+A migration runs in one transaction together with the row that records
+it in `schema_migrations`, so it applies completely or not at all: if a
+statement fails, its earlier statements are undone and the migration is
+still pending. Rolling it back works the same way.
+
+Some statements cannot run inside a transaction, such as PostgreSQL's
+`CREATE INDEX CONCURRENTLY` and `VACUUM`. A migration that needs them
+opts out with `transaction: false` after its name:
+
+```
+migration AddSlugIndex, transaction: false {
+  change {
+    add_index :posts, :slug, unique: true
+  }
+}
+```
+
+- `transaction:` is `true` (the default) or `false`. It is the only
+  option a migration takes: any other is an error
+  (`unknown option 'lock' for migration`), and so is a positional
+  argument (`migration takes only options, such as 'transaction: false'`).
+- It applies in both directions: the `down` steps run without a
+  transaction too.
+- Without a transaction, each statement takes effect as soon as it runs,
+  and the `schema_migrations` row is written after the last one. If a
+  statement fails, the statements before it stay applied and the
+  migration is not recorded: it still shows as `down`, and the next
+  `migrate` runs it again from its first statement. Fix the database by
+  hand before that, or write the migration so that it can run twice.
+  Keeping such a migration to the statements that need it limits what
+  can be left half done.
+- On a database whose schema changes are not transactional, every
+  migration runs this way. PostgreSQL's are.
 
 ## Database neutrality
 
@@ -531,5 +570,9 @@ Each of these is rejected; the message is what `ffmig check` reports.
 | `add_reference :t, :user, null: false, on_delete: :nullify` | `on_delete: :nullify on non-null column 'user_id'` |
 | `add_reference :t, :user, foreign_key: false, to: :people` | `'to:' needs a foreign key` |
 | `create_table :t, id: :integer { }`                 | `id:` must be `:bigint`, `:uuid` or `false` |
+| `migration M, transaction: 0 { change { } }` (whole file) | `'transaction:' must be true or false` |
+| `migration M, lock: true { change { } }` (whole file) | `unknown option 'lock' for migration` |
+| `migration M, :fast { change { } }` (whole file)    | `migration takes only options, such as 'transaction: false'` |
+| `migration M transaction: false { change { } }` (whole file) | syntax error: expected `,` after migration name |
 | `add_index :t, [:a, :b]`                            | syntax error: `[` is reserved |
 | `migration M { }`                                   | syntax error: expected `change`, `up` or `down` |

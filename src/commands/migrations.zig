@@ -1,7 +1,7 @@
 //! What the commands that touch the database share: loading the config
-//! and the migration files, connecting, taking the migration lock,
-//! reading the recorded versions, and running one migration's statements
-//! together with its tracking row.
+//! and the migration files, connecting, setting the timeouts, taking the
+//! migration lock, reading the recorded versions, and running one
+//! migration's statements together with its tracking row.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -29,6 +29,7 @@ pub const Project = struct {
     dir: Io.Dir,
     /// Database URL as configured, before `${VAR}` expansion.
     url: ?[]const u8,
+    timeouts: config.Timeouts,
     /// In version order.
     files: []const File,
 
@@ -45,7 +46,7 @@ pub const Project = struct {
             dir.close(env.io);
             return null;
         };
-        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .files = files };
+        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .timeouts = cfg.timeouts, .files = files };
     }
 
     fn listFiles(io: Io, arena: Allocator, dir: Io.Dir, path: []const u8, err: *Writer) Writer.Error!?[]const File {
@@ -122,6 +123,7 @@ pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config
         switch (e) {
             error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{config.file_name}),
             error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ config.file_name, diag.line }),
+            error.InvalidTimeout => try err.print("ffmig: {s}:{d}: {s} must be a duration such as \"5s\" or \"500ms\", or \"0\" for no limit\n", .{ config.file_name, diag.line, diag.key }),
             else => try err.print("ffmig: cannot read {s}: {t}\n", .{ config.file_name, e }),
         }
         return null;
@@ -205,6 +207,32 @@ pub fn open(arena: Allocator, url: Url, err: *Writer) Writer.Error!?Connection {
         return null;
     };
     return .{ .db = conn, .dialect = url.dialect };
+}
+
+/// Sets the configured timeouts for the rest of the session. Reports
+/// failure to `err` and returns false.
+pub fn setTimeouts(arena: Allocator, conn: Connection, timeouts: config.Timeouts, err: *Writer) Writer.Error!bool {
+    if (timeouts.lock) |ms| if (!try setTimeout(arena, conn, .{ .lock = ms }, err)) return false;
+    if (timeouts.statement) |ms| if (!try setTimeout(arena, conn, .{ .statement = ms }, err)) return false;
+    return true;
+}
+
+fn setTimeout(arena: Allocator, conn: Connection, t: sql.Timeout, err: *Writer) Writer.Error!bool {
+    var statement: Writer.Allocating = .init(arena);
+    sql.writeTimeout(conn.dialect, t, &statement.writer) catch {
+        try outOfMemory(err);
+        return false;
+    };
+    var diag: db.Diagnostic = .{};
+    conn.db.exec(statement.written(), &diag) catch |e| {
+        const context = switch (t) {
+            .lock => "cannot set lock_timeout",
+            .statement => "cannot set statement_timeout",
+        };
+        try dbError(e, err, context, diag);
+        return false;
+    };
+    return true;
 }
 
 /// Seconds that `migrate` and `rollback` wait for the lock by default.
@@ -291,17 +319,21 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
 }
 
 /// Runs `ops` and then the `tracking` statement, inside one transaction
-/// when the dialect's DDL is transactional. On failure, reports the
-/// statement and the database's message, rolls back, and returns false.
+/// when `transaction` is set (the migration's `transaction:`) and the
+/// dialect's DDL is transactional. On failure, reports the statement and
+/// the database's message, rolls back, and returns false. Without a
+/// transaction, the statements that ran before the failing one stay, and
+/// the tracking statement does not run.
 pub fn apply(
     arena: Allocator,
     conn: Connection,
     path: []const u8,
     ops: []const mig.ast.Operation,
     tracking: sql.Tracking,
+    transaction: bool,
     err: *Writer,
 ) Writer.Error!bool {
-    const transactional = sql.capabilities(conn.dialect).transactional_ddl;
+    const transactional = transaction and sql.capabilities(conn.dialect).transactional_ddl;
     var diag: db.Diagnostic = .{};
     if (transactional) conn.db.exec("BEGIN", &diag) catch |e| {
         try dbError(e, err, path, diag);
@@ -311,7 +343,8 @@ pub fn apply(
     var statement: Writer.Allocating = .init(arena);
     var it: sql.Statements = .{ .ops = ops };
     var done = false;
-    while (!done) {
+    var ran: usize = 0;
+    while (!done) : (ran += 1) {
         statement.clearRetainingCapacity();
         const w = &statement.writer;
         const written = if (it.next()) |op| sql.writeStatement(conn.dialect, op, w) else blk: {
@@ -325,7 +358,14 @@ pub fn apply(
         conn.db.exec(statement.written(), &diag) catch |e| {
             try dbError(e, err, path, diag);
             try err.print("while running:\n{s};\n", .{statement.written()});
-            if (transactional) conn.db.exec("ROLLBACK", &diag) catch {};
+            if (transactional) {
+                // Reported after the original error: without a working
+                // rollback, what the migration changed is unknown.
+                var rollback_diag: db.Diagnostic = .{};
+                conn.db.exec("ROLLBACK", &rollback_diag) catch |re| try dbError(re, err, "rollback failed", rollback_diag);
+            } else if (ran > 0) {
+                try err.print("ffmig: {s} runs without a transaction, so the statements before this one were not undone\n", .{path});
+            }
             return false;
         };
     }

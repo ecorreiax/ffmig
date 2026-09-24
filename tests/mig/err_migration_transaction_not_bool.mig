@@ -1,0 +1,3 @@
+migration M, transaction: 0 {
+  change { }
+}

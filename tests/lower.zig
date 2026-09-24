@@ -166,6 +166,17 @@ test "empty sections" {
     try testing.expectEqual(0, columns.len);
 }
 
+test "transaction: defaults to true" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    try testing.expect((try lowerSource(arena.allocator(), "migration M { change { } }", &diag)).transaction);
+    try testing.expect((try lowerSource(arena.allocator(), "migration M, transaction: true { change { } }", &diag)).transaction);
+    const m = try lowerSource(arena.allocator(), "migration M, transaction: false { up { } down { } }", &diag);
+    try testing.expect(!m.transaction);
+    try testing.expectEqualStrings("M", m.name);
+}
+
 test "defaults" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -250,6 +261,13 @@ test "semantic errors" {
         .{ "migration M { down { } }", "missing 'up' block", "down" },
         .{ "migration M { change { } change { } }", "'change' block defined twice", "change" },
         .{ "migration M { up { } down { } up { } }", "'up' block defined twice", "up" },
+        // Migration options.
+        .{ "migration M, :fast { change { } }", "migration takes only options, such as 'transaction: false'", ":fast" },
+        .{ "migration M, lock: true { change { } }", "unknown option 'lock' for migration", "lock:" },
+        .{ "migration M, transaction: 0 { change { } }", "'transaction:' must be true or false", "0" },
+        .{ "migration M, transaction: true, transaction: false { change { } }", "option 'transaction:' given twice", "transaction:" },
+        // Options are checked before the body.
+        .{ "migration M, lock: true { up { } }", "unknown option 'lock' for migration", "lock:" },
         // Operations and arguments.
         .{ "add_idx :users, :email", "unknown operation 'add_idx'", "add_idx" },
         .{ "string :name", "unknown operation 'string'", "string" },

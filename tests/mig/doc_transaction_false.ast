@@ -1,0 +1,3 @@
+migration AddSlugIndex transaction=false
+  change
+    add_index posts slug unique

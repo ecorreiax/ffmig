@@ -1,0 +1,3 @@
+migration M, lock: true {
+  change { }
+}

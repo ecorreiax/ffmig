@@ -15,12 +15,12 @@ const Env = commands.Env;
 const testing = std.testing;
 
 /// Returns `applied` for the version query and logs every other statement.
-/// Fails the first statement that contains `fail_on`. The migration lock
-/// is free unless `busy` is set, which refuses that many attempts to take
-/// it.
+/// Fails every statement that contains one of `fail_on`. The migration
+/// lock is free unless `busy` is set, which refuses that many attempts to
+/// take it.
 const FakeDb = struct {
     applied: []const []const u8 = &.{},
-    fail_on: ?[]const u8 = null,
+    fail_on: []const []const u8 = &.{},
     busy: usize = 0,
     log: Writer.Allocating,
 
@@ -40,8 +40,8 @@ const FakeDb = struct {
 
     fn exec(ptr: *anyopaque, statement: []const u8, diag: *db.Diagnostic) db.Error!void {
         const f: *FakeDb = @ptrCast(@alignCast(ptr));
-        if (f.fail_on) |s| if (std.mem.indexOf(u8, statement, s) != null) {
-            diag.message = "boom";
+        for (f.fail_on) |s| if (std.mem.indexOf(u8, statement, s) != null) {
+            diag.message = if (std.mem.eql(u8, statement, "ROLLBACK")) "no connection to the server" else "boom";
             return error.DatabaseError;
         };
         f.log.writer.print("{s};\n", .{statement}) catch return error.OutOfMemory;
@@ -107,9 +107,16 @@ fn runIn(dir: Io.Dir, fake: *FakeDb, command: Command) !Result {
 }
 
 fn setup(files: []const [2][]const u8) !testing.TmpDir {
+    return setupWith("", files);
+}
+
+/// `setup` with `extra` added to the `[migration]` section.
+fn setupWith(extra: []const u8, files: []const [2][]const u8) !testing.TmpDir {
     var tmp = testing.tmpDir(.{});
     errdefer tmp.cleanup();
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = config.file_name, .data = "[migration]\npath = \"db\"\n" });
+    const cfg = try std.mem.concat(testing.allocator, u8, &.{ "[migration]\npath = \"db\"\n", extra });
+    defer testing.allocator.free(cfg);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = config.file_name, .data = cfg });
     try tmp.dir.createDirPath(testing.io, "db");
     for (files) |f| {
         const path = try std.fs.path.join(testing.allocator, &.{ "db", f[0] });
@@ -293,7 +300,7 @@ test "migrate stops at a failing statement and rolls its migration back" {
     defer tmp.cleanup();
     var fake: FakeDb = .init(&.{});
     defer fake.deinit();
-    fake.fail_on = "CREATE INDEX";
+    fake.fail_on = &.{"CREATE INDEX"};
 
     var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
     defer r.deinit();
@@ -318,6 +325,148 @@ test "migrate stops at a failing statement and rolls its migration back" {
         \\ROLLBACK;
         \\
     ++ unlock, fake.log.written());
+}
+
+test "a failed rollback is reported after the error" {
+    var tmp = try setup(&.{ create_users, add_role });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+    fake.fail_on = &.{ "CREATE INDEX", "ROLLBACK" };
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings("", r.out.written());
+    try testing.expectEqualStrings(
+        \\ffmig: db/20260102000000_add_role.mig: boom
+        \\while running:
+        \\CREATE INDEX "index_users_on_role" ON "users" ("role");
+        \\ffmig: rollback failed: no connection to the server
+        \\
+    , r.err.written());
+}
+
+const add_slug = [2][]const u8{
+    "20260104000000_add_slug.mig",
+    \\migration AddSlug, transaction: false {
+    \\  change {
+    \\    add_column :users, :slug, :string
+    \\    add_index :users, :slug, unique: true
+    \\  }
+    \\}
+    \\
+};
+
+test "transaction: false runs the migration without BEGIN and COMMIT, both ways" {
+    var tmp = try setup(&.{ create_users, add_slug });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\ALTER TABLE "users" ADD COLUMN "slug" varchar;
+        \\CREATE UNIQUE INDEX "index_users_on_slug" ON "users" ("slug");
+        \\INSERT INTO "schema_migrations" ("version") VALUES ('20260104000000');
+        \\
+    ++ unlock, fake.log.written());
+
+    var rollback_fake: FakeDb = .init(&.{ "20260101000000", "20260104000000" });
+    defer rollback_fake.deinit();
+    var rr = try runIn(tmp.dir, &rollback_fake, .{ .rollback = .{} });
+    defer rr.deinit();
+    try testing.expectEqual(0, rr.code);
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\DROP INDEX "index_users_on_slug";
+        \\ALTER TABLE "users" DROP COLUMN "slug";
+        \\DELETE FROM "schema_migrations" WHERE "version" = '20260104000000';
+        \\
+    ++ unlock, rollback_fake.log.written());
+}
+
+test "transaction: false says that a failure keeps the statements before it" {
+    var tmp = try setup(&.{ create_users, add_slug });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+    fake.fail_on = &.{"CREATE UNIQUE INDEX"};
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings(
+        \\ffmig: db/20260104000000_add_slug.mig: boom
+        \\while running:
+        \\CREATE UNIQUE INDEX "index_users_on_slug" ON "users" ("slug");
+        \\ffmig: db/20260104000000_add_slug.mig runs without a transaction, so the statements before this one were not undone
+        \\
+    , r.err.written());
+    // No ROLLBACK, and no tracking row.
+    try testing.expectEqualStrings(lock ++ tracking_create ++
+        \\ALTER TABLE "users" ADD COLUMN "slug" varchar;
+        \\
+    ++ unlock, fake.log.written());
+
+    // Failing on the first statement leaves nothing behind to mention.
+    var first: FakeDb = .init(&.{"20260101000000"});
+    defer first.deinit();
+    first.fail_on = &.{"ADD COLUMN"};
+    var rf = try runIn(tmp.dir, &first, .{ .migrate = .{} });
+    defer rf.deinit();
+    try testing.expectEqual(1, rf.code);
+    try testing.expectEqualStrings(
+        \\ffmig: db/20260104000000_add_slug.mig: boom
+        \\while running:
+        \\ALTER TABLE "users" ADD COLUMN "slug" varchar;
+        \\
+    , rf.err.written());
+}
+
+test "migrate and rollback set the configured timeouts before anything else" {
+    var tmp = try setupWith("lock_timeout = \"5s\"\nstatement_timeout = \"0\"\n", &.{create_users});
+    defer tmp.cleanup();
+    const timeouts = "SET lock_timeout = '5000ms';\nSET statement_timeout = '0ms';\n";
+    inline for (.{ Command{ .migrate = .{} }, Command{ .rollback = .{} } }) |command| {
+        var fake: FakeDb = .init(&.{"20260101000000"});
+        defer fake.deinit();
+        var r = try runIn(tmp.dir, &fake, command);
+        defer r.deinit();
+        try testing.expectEqual(0, r.code);
+        try testing.expect(std.mem.startsWith(u8, fake.log.written(), timeouts ++ lock));
+    }
+
+    // A timeout the server refuses stops the run.
+    var fake: FakeDb = .init(&.{});
+    defer fake.deinit();
+    fake.fail_on = &.{"statement_timeout"};
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqual(1, r.code);
+    try testing.expectEqualStrings(
+        \\ffmig: cannot set statement_timeout: boom
+        \\ffmig: nothing was migrated
+        \\
+    , r.err.written());
+    try testing.expectEqualStrings("SET lock_timeout = '5000ms';\n", fake.log.written());
+}
+
+test "project load reports a timeout that is not a duration" {
+    var tmp = try setupWith("lock_timeout = \"5\"\n", &.{});
+    defer tmp.cleanup();
+    var err: Writer.Allocating = .init(testing.allocator);
+    defer err.deinit();
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const env: Env = .{ .io = testing.io, .cwd = tmp.dir, .gpa = testing.allocator };
+    try testing.expectEqual(null, try migrations.Project.load(env, arena_state.allocator(), &err.writer));
+    try testing.expectEqualStrings(
+        \\ffmig: ffmig.toml:3: lock_timeout must be a duration such as "5s" or "500ms", or "0" for no limit
+        \\
+    , err.written());
 }
 
 test "rollback undoes the newest migrations with their down plans" {

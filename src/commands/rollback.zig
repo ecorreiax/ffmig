@@ -5,7 +5,8 @@
 //! `down`. Every file is parsed and its down plan derived before anything
 //! runs, so an irreversible `change` stops the rollback untouched. Each
 //! migration runs in its own transaction together with the delete of its
-//! version. The whole run holds the migration lock, like `migrate`.
+//! version, unless it has `transaction: false`. The timeouts and the
+//! migration lock work as for `migrate`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -68,7 +69,9 @@ pub fn rollback(
     out: *Writer,
     err: *Writer,
 ) Writer.Error!u8 {
-    if (!try migrations.lock(env.io, arena, conn, options.lock_wait, err)) {
+    if (!try migrations.setTimeouts(arena, conn, project.timeouts, err) or
+        !try migrations.lock(env.io, arena, conn, options.lock_wait, err))
+    {
         try err.writeAll("ffmig: nothing was rolled back\n");
         return 1;
     }
@@ -115,7 +118,7 @@ pub fn rollback(
     }
 
     for (undos) |u| {
-        if (!try migrations.apply(arena, conn, u.parsed.path, u.down, .{ .delete = u.parsed.file.version }, err)) return 1;
+        if (!try migrations.apply(arena, conn, u.parsed.path, u.down, .{ .delete = u.parsed.file.version }, u.parsed.migration.transaction, err)) return 1;
         try out.print("Rolled back {s}\n", .{u.parsed.path});
     }
     return 0;

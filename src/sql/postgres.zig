@@ -1,6 +1,6 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
-//! primary keys, literals, named defaults, the migration lock and the
-//! database lookup.
+//! primary keys, literals, named defaults, the migration lock, timeouts
+//! and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -97,6 +97,15 @@ pub fn lock(w: *Writer, l: root.Lock) Writer.Error!void {
     switch (l) {
         .try_lock => try w.print("SELECT 1 WHERE pg_try_advisory_lock({d})", .{lock_key}),
         .unlock => try w.print("SELECT pg_advisory_unlock({d})", .{lock_key}),
+    }
+}
+
+/// `SET` without `LOCAL` lasts for the session, so it covers every
+/// migration of the run, `transaction: false` ones included.
+pub fn timeout(w: *Writer, t: root.Timeout) Writer.Error!void {
+    switch (t) {
+        .lock => |ms| try w.print("SET lock_timeout = '{d}ms'", .{ms}),
+        .statement => |ms| try w.print("SET statement_timeout = '{d}ms'", .{ms}),
     }
 }
 

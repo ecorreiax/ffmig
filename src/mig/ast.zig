@@ -6,6 +6,9 @@ const Span = @import("token.zig").Span;
 
 pub const Migration = struct {
     name: []const u8,
+    /// `transaction: false` runs the migration's statements outside a
+    /// transaction, in either direction.
+    transaction: bool = true,
     body: Body,
 };
 

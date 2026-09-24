@@ -8,6 +8,10 @@ pub const File = struct {
     /// Migration name, e.g. `CreateUsersProfile`.
     name: []const u8,
     name_span: Span,
+    /// Arguments after the name, e.g. `transaction: false`. The grammar
+    /// allows positional ones too; lowering rejects them.
+    args: []Value,
+    options: []Option,
     /// `change` / `up` / `down`, in source order. Lowering validates the combination.
     sections: []Section,
     span: Span,
