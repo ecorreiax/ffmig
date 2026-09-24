@@ -39,18 +39,34 @@ pub fn write(dialect: Dialect, ops: []const ast.Operation, w: *Writer) Writer.Er
     }
 }
 
-/// Table that records which migrations have run, one row per version.
+/// Table that records which migrations have run, one row per version:
+/// `version`, the `checksum` of the file that ran (see
+/// `commands/migrations.zig`), and when it ran (`applied_at`). Tables
+/// created before `checksum` and `applied_at` existed get them added by
+/// `upgrade`, with null in the rows already there: ffmig never knew those
+/// values, so it does not make them up.
 pub const tracking_table = "schema_migrations";
 
 /// A statement that reads or writes the tracking table.
 pub const Tracking = union(enum) {
     /// Creates the table if it does not exist.
     create,
-    /// Selects every recorded version, one per row, in order.
+    /// Selects one row if the table has every column that `create` gives
+    /// it, none if an older ffmig created it.
+    current,
+    /// Adds the columns that `current` looks for. Only run when `current`
+    /// finds none: adding a column locks the whole table, even when the
+    /// column is already there.
+    upgrade,
+    /// Selects every recorded version, in order, with its checksum and
+    /// its `applied_at` in whole seconds since 1970 (UTC).
     select,
-    insert: []const u8,
+    insert: struct { version: []const u8, checksum: []const u8 },
     delete: []const u8,
 };
+
+/// The columns after `version`, which `upgrade` adds to an older table.
+const tracking_columns = [_][]const u8{ "checksum", "applied_at" };
 
 /// Writes one tracking statement, without a trailing `;`.
 pub fn writeTracking(dialect: Dialect, t: Tracking, w: *Writer) Writer.Error!void {
@@ -68,23 +84,52 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
             try D.identifier(w, "version");
             try w.writeByte(' ');
             try D.columnType(w, .{ .name = "version", .type = .string, .span = .{ .start = 0, .end = 0 } });
-            try w.writeAll(" PRIMARY KEY)");
+            try w.writeAll(" PRIMARY KEY, ");
+            try trackingColumn(D, "checksum", w);
+            try w.writeAll(", ");
+            try trackingColumn(D, "applied_at", w);
+            try w.writeAll(" DEFAULT ");
+            try D.namedDefault(w, .now, .datetime);
+            try w.writeByte(')');
+        },
+        .current => try D.trackingCurrent(w, tracking_table, &tracking_columns),
+        .upgrade => {
+            // Added without the default, so the rows already there get
+            // null instead of the time of the upgrade.
+            try alterTable(D, tracking_table, w);
+            for (tracking_columns) |c| {
+                try w.writeAll(" ADD COLUMN IF NOT EXISTS ");
+                try trackingColumn(D, c, w);
+                try w.writeByte(',');
+            }
+            try w.writeAll(" ALTER COLUMN ");
+            try D.identifier(w, "applied_at");
+            try w.writeAll(" SET DEFAULT ");
+            try D.namedDefault(w, .now, .datetime);
         },
         .select => {
             try w.writeAll("SELECT ");
             try D.identifier(w, "version");
+            try w.writeAll(", ");
+            try D.identifier(w, "checksum");
+            try w.writeAll(", ");
+            try D.epochSeconds(w, "applied_at");
             try w.writeAll(" FROM ");
             try D.identifier(w, tracking_table);
             try w.writeAll(" ORDER BY ");
             try D.identifier(w, "version");
         },
-        .insert => |v| {
+        .insert => |row| {
             try w.writeAll("INSERT INTO ");
             try D.identifier(w, tracking_table);
             try w.writeAll(" (");
             try D.identifier(w, "version");
+            try w.writeAll(", ");
+            try D.identifier(w, "checksum");
             try w.writeAll(") VALUES (");
-            try D.literal(w, .{ .string = v });
+            try D.literal(w, .{ .string = row.version });
+            try w.writeAll(", ");
+            try D.literal(w, .{ .string = row.checksum });
             try w.writeByte(')');
         },
         .delete => |v| {
@@ -96,6 +141,14 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
             try D.literal(w, .{ .string = v });
         },
     }
+}
+
+/// `"name" type` for one of `tracking_columns`, both nullable.
+fn trackingColumn(comptime D: type, name: []const u8, w: *Writer) Writer.Error!void {
+    try D.identifier(w, name);
+    try w.writeByte(' ');
+    if (std.mem.eql(u8, name, "applied_at")) return w.writeAll(D.instant_type);
+    try D.columnType(w, .{ .name = name, .type = .string, .span = .{ .start = 0, .end = 0 } });
 }
 
 /// A statement on the lock that keeps two runs on one database apart.

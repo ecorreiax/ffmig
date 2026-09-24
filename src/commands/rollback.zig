@@ -76,7 +76,7 @@ pub fn rollback(
         return 1;
     }
     defer migrations.unlock(arena, conn);
-    const applied = try migrations.appliedVersions(arena, conn, err) orelse return 1;
+    const applied = try migrations.readApplied(arena, conn, err) orelse return 1;
     if (applied.len == 0) {
         try out.writeAll("Nothing to roll back\n");
         return 0;
@@ -91,7 +91,7 @@ pub fn rollback(
     var ok = true;
     // Newest first.
     for (undos, 0..) |*u, i| {
-        const version = versions[versions.len - 1 - i];
+        const version = versions[versions.len - 1 - i].version;
         const file = project.find(version) orelse {
             try err.print("ffmig: no file in {s} for applied migration {s}\n", .{ project.path, version });
             ok = false;

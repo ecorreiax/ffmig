@@ -1,7 +1,7 @@
 //! What the commands that touch the database share: loading the config
 //! and the migration files, connecting, setting the timeouts, taking the
-//! migration lock, reading the recorded versions, and running one
-//! migration's statements together with its tracking row.
+//! migration lock, reading the recorded versions and checksums, and
+//! running one migration's statements together with its tracking row.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -94,8 +94,9 @@ pub const Project = struct {
         return null;
     }
 
-    /// Reads, parses and lowers `file`, reporting errors like `ffmig check`.
-    pub fn parse(p: Project, io: Io, arena: Allocator, file: File, err: *Writer) Writer.Error!?Parsed {
+    /// Reads `file` and returns its shown path and source, reporting
+    /// failure to `err`.
+    fn read(p: Project, io: Io, arena: Allocator, file: File, err: *Writer) Writer.Error!?struct { []const u8, []const u8 } {
         const path = p.shown(arena, file.name) catch {
             try outOfMemory(err);
             return null;
@@ -104,6 +105,12 @@ pub const Project = struct {
             try err.print("ffmig: cannot read {s}: {t}\n", .{ path, e });
             return null;
         };
+        return .{ path, source };
+    }
+
+    /// Reads, parses and lowers `file`, reporting errors like `ffmig check`.
+    pub fn parse(p: Project, io: Io, arena: Allocator, file: File, err: *Writer) Writer.Error!?Parsed {
+        const path, const source = try p.read(io, arena, file, err) orelse return null;
         var diag: mig.Diagnostic = .{};
         const migration = mig.parseMigration(arena, source, &diag) catch |e| {
             switch (e) {
@@ -112,9 +119,37 @@ pub const Project = struct {
             }
             return null;
         };
-        return .{ .file = file, .path = path, .source = source, .migration = migration };
+        return .{ .file = file, .path = path, .source = source, .checksum = checksum(source), .migration = migration };
+    }
+
+    /// Whether `file` has changed since it was applied as `row`: false
+    /// when `row` has no checksum to compare with. Reports a file that
+    /// cannot be read to `err` and returns null.
+    pub fn changed(p: Project, io: Io, arena: Allocator, file: File, row: Applied, err: *Writer) Writer.Error!?bool {
+        const recorded = row.checksum orelse return false;
+        _, const source = try p.read(io, arena, file, err) orelse return null;
+        return !std.mem.eql(u8, &checksum(source), recorded);
     }
 };
+
+/// SHA-256 of a migration file, in lowercase hex.
+pub const Checksum = [64]u8;
+
+/// The checksum recorded for a migration when it is applied, so that
+/// `status` and `migrate` can tell when its file was edited afterwards.
+/// It hashes the source, not the parsed migration, so that a new ffmig
+/// reading the same file differently flags nothing. `\r\n` counts as
+/// `\n`, so a checkout with Windows line endings flags nothing either.
+pub fn checksum(source: []const u8) Checksum {
+    var h: std.crypto.hash.sha2.Sha256 = .init(.{});
+    var rest = source;
+    while (std.mem.indexOf(u8, rest, "\r\n")) |i| {
+        h.update(rest[0..i]);
+        rest = rest[i + 1 ..];
+    }
+    h.update(rest);
+    return std.fmt.bytesToHex(h.finalResult(), .lower);
+}
 
 /// Loads `ffmig.toml`, reporting problems to `err` and returning null.
 pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config.Config {
@@ -136,21 +171,32 @@ pub const Parsed = struct {
     /// `<migrations dir>/<name>`.
     path: []const u8,
     source: []const u8,
+    checksum: Checksum,
     migration: mig.ast.Migration,
 };
 
+/// A row of the tracking table.
+pub const Applied = struct {
+    version: []const u8,
+    /// Null for rows written before ffmig recorded checksums.
+    checksum: ?[]const u8,
+    /// Seconds since 1970, UTC. Null for rows written before ffmig
+    /// recorded it.
+    applied_at: ?i64,
+};
+
 /// Files whose version is not in `applied`, in file order. `applied` must
-/// be sorted, as `appliedVersions` returns it.
-pub fn pending(arena: Allocator, files: []const File, applied: []const []const u8) Allocator.Error![]const File {
+/// be sorted, as `readApplied` returns it.
+pub fn pending(arena: Allocator, files: []const File, applied: []const Applied) Allocator.Error![]const File {
     var result: std.ArrayList(File) = .empty;
     for (files) |f| {
-        if (std.sort.binarySearch([]const u8, applied, f.version, orderVersion) == null) try result.append(arena, f);
+        if (std.sort.binarySearch(Applied, applied, f.version, orderVersion) == null) try result.append(arena, f);
     }
     return result.items;
 }
 
-fn orderVersion(key: []const u8, item: []const u8) std.math.Order {
-    return std.mem.order(u8, key, item);
+fn orderVersion(key: []const u8, item: Applied) std.math.Order {
+    return std.mem.order(u8, key, item.version);
 }
 
 pub const Connection = struct { db: db.Db, dialect: db.Dialect };
@@ -295,27 +341,45 @@ fn lockSql(arena: Allocator, dialect: db.Dialect, l: sql.Lock) Allocator.Error![
     return w.written();
 }
 
-/// Creates the tracking table if it is missing and returns the recorded
-/// versions, sorted.
-pub fn appliedVersions(arena: Allocator, conn: Connection, err: *Writer) Writer.Error!?[]const []const u8 {
+/// Creates the tracking table if it is missing, adds the columns that an
+/// older ffmig did not create, and returns the recorded rows, sorted by
+/// version.
+pub fn readApplied(arena: Allocator, conn: Connection, err: *Writer) Writer.Error!?[]const Applied {
     var diag: db.Diagnostic = .{};
     const create = trackingSql(arena, conn.dialect, .create) catch return oomNull(err);
+    const current = trackingSql(arena, conn.dialect, .current) catch return oomNull(err);
+    const upgrade = trackingSql(arena, conn.dialect, .upgrade) catch return oomNull(err);
     const select = trackingSql(arena, conn.dialect, .select) catch return oomNull(err);
     conn.db.exec(create, &diag) catch |e| {
         try dbError(e, err, "cannot create " ++ sql.tracking_table, diag);
         return null;
     };
-    const versions = conn.db.query(arena, select, &diag) catch |e| {
+    const found = conn.db.query(arena, current, &diag) catch |e| {
         try dbError(e, err, "cannot read " ++ sql.tracking_table, diag);
         return null;
     };
+    if (found.len == 0) conn.db.exec(upgrade, &diag) catch |e| {
+        try dbError(e, err, "cannot upgrade " ++ sql.tracking_table, diag);
+        return null;
+    };
+    const rows = conn.db.query(arena, select, &diag) catch |e| {
+        try dbError(e, err, "cannot read " ++ sql.tracking_table, diag);
+        return null;
+    };
+    const applied = arena.alloc(Applied, rows.len) catch return oomNull(err);
+    for (rows, applied) |row, *a| a.* = .{
+        // The primary key.
+        .version = row[0].?,
+        .checksum = row[1],
+        .applied_at = if (row[2]) |at| std.fmt.parseInt(i64, at, 10) catch null else null,
+    };
     // The database's collation may not sort like bytes do.
-    std.mem.sortUnstable([]const u8, @constCast(versions), {}, lessThan);
-    return versions;
+    std.mem.sortUnstable(Applied, applied, {}, lessThan);
+    return applied;
 }
 
-fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.lessThan(u8, a, b);
+fn lessThan(_: void, a: Applied, b: Applied) bool {
+    return std.mem.lessThan(u8, a.version, b.version);
 }
 
 /// Runs `ops` and then the `tracking` statement, inside one transaction
@@ -391,7 +455,7 @@ pub fn dbError(e: db.Error, err: *Writer, context: []const u8, diag: db.Diagnost
     }
 }
 
-fn oomNull(err: *Writer) Writer.Error!?[]const []const u8 {
+fn oomNull(err: *Writer) Writer.Error!?[]const Applied {
     try outOfMemory(err);
     return null;
 }

@@ -28,6 +28,8 @@ extern "pq" fn PQexec(conn: *PGconn, query: [*:0]const u8) ?*PGresult;
 extern "pq" fn PQresultStatus(res: *const PGresult) c_int;
 extern "pq" fn PQresultErrorMessage(res: *const PGresult) [*:0]const u8;
 extern "pq" fn PQntuples(res: *const PGresult) c_int;
+extern "pq" fn PQnfields(res: *const PGresult) c_int;
+extern "pq" fn PQgetisnull(res: *const PGresult, row: c_int, column: c_int) c_int;
 extern "pq" fn PQgetvalue(res: *const PGresult, row: c_int, column: c_int) [*:0]const u8;
 extern "pq" fn PQclear(res: *PGresult) void;
 
@@ -63,12 +65,20 @@ pub const Connection = struct {
         PQclear(res);
     }
 
-    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const []const u8 {
+    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const root.Row {
         const c: *Connection = @ptrCast(@alignCast(ptr));
         const res = try c.run(statement, diag);
         defer PQclear(res);
-        const rows = try arena.alloc([]const u8, @intCast(PQntuples(res)));
-        for (rows, 0..) |*row, i| row.* = try arena.dupe(u8, std.mem.span(PQgetvalue(res, @intCast(i), 0)));
+        const rows = try arena.alloc(root.Row, @intCast(PQntuples(res)));
+        for (rows, 0..) |*row, i| {
+            const values = try arena.alloc(?[]const u8, @intCast(PQnfields(res)));
+            for (values, 0..) |*v, j| {
+                const r: c_int = @intCast(i);
+                const col: c_int = @intCast(j);
+                v.* = if (PQgetisnull(res, r, col) != 0) null else try arena.dupe(u8, std.mem.span(PQgetvalue(res, r, col)));
+            }
+            row.* = values;
+        }
         return rows;
     }
 

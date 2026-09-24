@@ -76,30 +76,34 @@ migration CreateUsers {
 ffmig migrate
 ```
 
-Applied versions are recorded in a `schema_migrations` table. `migrate` checks every pending file before it runs anything, so a broken file never leaves a batch half-applied. Each migration runs in its own transaction.
+Each applied migration is recorded in a `schema_migrations` table, with a checksum of its file and the time it ran. `migrate` checks every pending file before it runs anything, so a broken file never leaves a batch half-applied. Each migration runs in its own transaction.
 
 Some statements, such as PostgreSQL's `CREATE INDEX CONCURRENTLY`, cannot run inside a transaction. A migration that needs them starts with `migration AddSlugIndex, transaction: false {`. If one of its statements fails, the ones before it are not undone and the migration stays pending, so keep such migrations small (see [Transactions](docs/mig.md#transactions)).
 
 A migration that waits for a lock, say behind a long query on the table it alters, also blocks every query queued behind it. `lock_timeout` in `[migration]` makes it fail instead, and `statement_timeout` limits how long any one statement may run. Both take a duration such as `"5s"`, `"500ms"`, `"2min"` or `"0"` for no limit. When they are unset, the database server's settings apply.
 
+`ffmig status` lists each migration as `up` or `down`, with the time (UTC) each `up` one ran. An applied migration whose file was edited afterwards shows `(changed)`, and `migrate` warns about it: the edit never runs, so write a new migration instead. `migrate --strict` refuses to run at all while an applied file has changed, which suits CI. A pending migration older than the last applied one, as happens when branches merge, still runs, with a note.
+
+A `schema_migrations` table made by an earlier ffmig gains the checksum and time columns the next time ffmig reads it; its existing rows have neither, so they are never flagged.
+
 `migrate` and `rollback` hold a lock on the database while they run, so several deploys starting at once apply each migration exactly once: the others wait, then find nothing left to do. A run gives up after 60 seconds of waiting; `--lock-wait <seconds>` changes that, and `--lock-wait 0` does not wait at all. `status` never waits.
 
 ### Commands
 
-| Command          | Description                                            |
-|------------------|--------------------------------------------------------|
-| `init`           | Create `ffmig.toml` and the migrations directory       |
-| `create`         | Create the database named by the database url          |
-| `drop`           | Drop that database after confirmation (`--force`)      |
-| `protect`        | Mark the database so that `drop` refuses it            |
-| `unprotect`      | Remove that mark                                       |
-| `new <name>`     | Create a timestamped migration file                    |
-| `check [files]`  | Check `.mig` files (`--ast`, `--down`)                 |
-| `sql <file>`     | Print the SQL for a migration (`--down` for rollback)  |
-| `migrate`        | Apply every pending migration (`--lock-wait <s>`)      |
-| `rollback`       | Undo the last migration (`--step <n>` for more)        |
-| `status`         | List migrations as up or down                          |
-| `help`           | Show usage                                             |
+| Command         | Description                                                   |
+|-----------------|---------------------------------------------------------------|
+| `init`          | Create `ffmig.toml` and the migrations directory              |
+| `create`        | Create the database named by the database url                 |
+| `drop`          | Drop that database after confirmation (`--force`)             |
+| `protect`       | Mark the database so that `drop` refuses it                   |
+| `unprotect`     | Remove that mark                                              |
+| `new <name>`    | Create a timestamped migration file                           |
+| `check [files]` | Check `.mig` files (`--ast`, `--down`)                        |
+| `sql <file>`    | Print the SQL for a migration (`--down` for rollback)         |
+| `migrate`       | Apply every pending migration (`--lock-wait <s>`, `--strict`) |
+| `rollback`      | Undo the last migration (`--step <n>` for more)               |
+| `status`        | List migrations as up or down, and when each ran              |
+| `help`          | Show usage                                                    |
 
 ### Protecting production
 

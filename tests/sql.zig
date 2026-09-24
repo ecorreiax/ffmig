@@ -110,9 +110,21 @@ fn expectTracking(t: sql.Tracking, expected: []const u8) !void {
 }
 
 test "postgres tracking table statements" {
-    try expectTracking(.create, "CREATE TABLE IF NOT EXISTS \"schema_migrations\" (\"version\" varchar PRIMARY KEY)");
-    try expectTracking(.select, "SELECT \"version\" FROM \"schema_migrations\" ORDER BY \"version\"");
-    try expectTracking(.{ .insert = "20260923140512" }, "INSERT INTO \"schema_migrations\" (\"version\") VALUES ('20260923140512')");
+    try expectTracking(.create,
+        \\CREATE TABLE IF NOT EXISTS "schema_migrations" ("version" varchar PRIMARY KEY, "checksum" varchar, "applied_at" timestamptz DEFAULT CURRENT_TIMESTAMP)
+    );
+    try expectTracking(.current,
+        \\SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('schema_migrations') AND NOT attisdropped AND attname IN ('checksum', 'applied_at') HAVING count(*) = 2
+    );
+    try expectTracking(.upgrade,
+        \\ALTER TABLE "schema_migrations" ADD COLUMN IF NOT EXISTS "checksum" varchar, ADD COLUMN IF NOT EXISTS "applied_at" timestamptz, ALTER COLUMN "applied_at" SET DEFAULT CURRENT_TIMESTAMP
+    );
+    try expectTracking(.select,
+        \\SELECT "version", "checksum", floor(extract(epoch FROM "applied_at"))::bigint FROM "schema_migrations" ORDER BY "version"
+    );
+    try expectTracking(.{ .insert = .{ .version = "20260923140512", .checksum = "ab12" } },
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260923140512', 'ab12')
+    );
     try expectTracking(.{ .delete = "it's" }, "DELETE FROM \"schema_migrations\" WHERE \"version\" = 'it''s'");
 }
 

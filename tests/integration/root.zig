@@ -99,7 +99,8 @@ const Fixture = struct {
         try o.expect(code, stdout, stderr);
     }
 
-    /// Checks the first column of `statement`'s rows, joined with commas.
+    /// Checks `statement`'s rows: columns joined with spaces, `NULL` for
+    /// null, and rows joined with commas.
     fn expectQuery(f: *Fixture, statement: []const u8, expected: []const u8) !void {
         const arena = f.arena_state.allocator();
         var diag: db.Diagnostic = .{};
@@ -107,7 +108,15 @@ const Fixture = struct {
             std.debug.print("{s}\n", .{diag.message});
             return e;
         };
-        try testing.expectEqualStrings(expected, try std.mem.join(arena, ",", rows));
+        var joined: Writer.Allocating = .init(arena);
+        for (rows, 0..) |row, i| {
+            if (i > 0) try joined.writer.writeByte(',');
+            for (row, 0..) |value, j| {
+                if (j > 0) try joined.writer.writeByte(' ');
+                try joined.writer.writeAll(value orelse "NULL");
+            }
+        }
+        try testing.expectEqualStrings(expected, joined.written());
     }
 
     fn expectColumns(f: *Fixture, table: []const u8, expected: []const u8) !void {
@@ -134,12 +143,31 @@ const Output = struct {
         o.err.deinit();
     }
 
+    /// `stdout` spells the times that `status` prints as `applied_time`.
     fn expect(o: *Output, code: u8, stdout: []const u8, stderr: []const u8) !void {
         try testing.expectEqualStrings(stderr, o.err.written());
+        maskTimes(o.out.written());
         try testing.expectEqualStrings(stdout, o.out.written());
         try testing.expectEqual(code, o.code);
     }
 };
+
+/// What `maskTimes` turns the time on an `up` line of `status` into.
+const applied_time = "YYYY-MM-DD HH:MM:SS UTC";
+
+/// Replaces the times on `status` lines, which depend on when the test
+/// ran, with `applied_time`.
+fn maskTimes(out: []u8) void {
+    const prefix = "up    ";
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, prefix) or line.len < prefix.len + applied_time.len) continue;
+        const time = line[prefix.len..][0..applied_time.len];
+        if (!std.ascii.isDigit(time[0]) or !std.mem.endsWith(u8, time, " UTC")) continue;
+        const start = @intFromPtr(time.ptr) - @intFromPtr(out.ptr);
+        @memcpy(out[start..][0..applied_time.len], applied_time);
+    }
+}
 
 /// Connects over the Unix socket in `host`. The explicit host keeps the
 /// tests off any server that `PGHOST` or the default socket points at.
@@ -191,8 +219,8 @@ test "migrate, status and rollback" {
     defer f.deinit();
 
     try f.expectRun(&.{"status"}, 0,
-        \\down  db/20260101000000_create_users.mig
-        \\down  db/20260102000000_add_role.mig
+        \\down                           db/20260101000000_create_users.mig
+        \\down                           db/20260102000000_add_role.mig
         \\
     , "");
 
@@ -206,8 +234,8 @@ test "migrate, status and rollback" {
     try f.expectVersions("20260101000000,20260102000000");
 
     try f.expectRun(&.{"status"}, 0,
-        \\up    db/20260101000000_create_users.mig
-        \\up    db/20260102000000_add_role.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig
         \\
     , "");
     try f.expectRun(&.{"migrate"}, 0, "Nothing to migrate\n", "");
@@ -304,8 +332,8 @@ test "a failing migration rolls back only itself" {
     try f.expectColumns("users", "id,email");
     try f.expectVersions("20260101000000");
     try f.expectRun(&.{"status"}, 0,
-        \\up    db/20260101000000_create_users.mig
-        \\down  db/20260102000000_bad.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\down                           db/20260102000000_bad.mig
         \\
     , "");
 }
@@ -345,12 +373,12 @@ test "create, migrate, protect and drop" {
         .{ .args = &.{"protect"}, .stdout = "Protected database create drop\n", .rows = 1 },
         .{ .args = &.{ "drop", "--force" }, .code = 1, .stderr = "ffmig: database create drop is protected; run 'ffmig unprotect' first to drop it\n", .rows = 1 },
         // Still recorded: the refused drops touched nothing.
-        .{ .args = &.{"status"}, .stdout = "up    db/20260101000000_create_users.mig\n", .rows = 1 },
+        .{ .args = &.{"status"}, .stdout = "up    " ++ applied_time ++ "  db/20260101000000_create_users.mig\n", .rows = 1 },
         .{ .args = &.{"unprotect"}, .stdout = "Unprotected database create drop\n", .rows = 1 },
         .{ .args = &.{ "drop", "--force" }, .stdout = "Dropped database create drop\n", .rows = 0 },
         .{ .args = &.{"create"}, .stdout = "Created database create drop\n", .rows = 1 },
         // A fresh database: nothing recorded in schema_migrations.
-        .{ .args = &.{"status"}, .stdout = "down  db/20260101000000_create_users.mig\n", .rows = 1 },
+        .{ .args = &.{"status"}, .stdout = "down                           db/20260101000000_create_users.mig\n", .rows = 1 },
         .{ .args = &.{ "drop", "--force" }, .stdout = "Dropped database create drop\n", .rows = 0 },
     };
     for (steps) |s| {
@@ -360,6 +388,7 @@ test "create, migrate, protect and drop" {
         defer err.deinit();
         const code = try ffmig.cli.run(env, s.args, &out.writer, &err.writer);
         try testing.expectEqualStrings(s.stderr, err.written());
+        maskTimes(out.written());
         try testing.expectEqualStrings(s.stdout, out.written());
         try testing.expectEqual(s.code, code);
         var diag: db.Diagnostic = .{};
@@ -535,4 +564,52 @@ test "lock_timeout and statement_timeout stop a blocked migration" {
         \\ffmig: ffmig.toml:3: lock_timeout must be a duration such as "5s" or "500ms", or "0" for no limit
         \\
     );
+}
+
+test "a one-column schema_migrations is upgraded in place" {
+    var f: Fixture = try .init("tracking_upgrade", &.{ create_users, add_role });
+    defer f.deinit();
+    // What an ffmig without checksums left behind.
+    try exec(f.conn, "CREATE TABLE schema_migrations (version varchar PRIMARY KEY)");
+    try exec(f.conn, "INSERT INTO schema_migrations VALUES ('20260101000000')");
+    try exec(f.conn, "CREATE TABLE users (id bigserial PRIMARY KEY, email varchar NOT NULL)");
+
+    // No time or checksum for the old row, and nothing made up for it.
+    try f.expectRun(&.{"status"}, 0,
+        \\up                             db/20260101000000_create_users.mig
+        \\down                           db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectColumns("schema_migrations", "version,checksum,applied_at");
+    try f.expectQuery("SELECT version, checksum, applied_at FROM schema_migrations", "20260101000000 NULL NULL");
+
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_add_role.mig\n", "");
+    try f.expectQuery(
+        "SELECT version, checksum, (applied_at > now() - interval '1 minute')::text FROM schema_migrations ORDER BY version",
+        "20260101000000 NULL NULL,20260102000000 91ad7ffee54b6319dd2d0a72873756fe80e1aedde38889bb24d9ad7b5e406c73 true",
+    );
+    try f.expectRun(&.{"status"}, 0,
+        \\up                             db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig
+        \\
+    , "");
+
+    // Editing an applied file.
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "db/" ++ add_role[0], .data = "# role for users\n" ++ add_role[1] });
+    try f.expectRun(&.{"status"}, 0,
+        \\up                             db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig (changed)
+        \\
+    , "");
+    const changed = "db/20260102000000_add_role.mig has changed since it was applied; its changes will not run\n";
+    try f.expectRun(&.{"migrate"}, 0, "Nothing to migrate\n", "ffmig: warning: " ++ changed);
+    try f.expectRun(&.{ "migrate", "--strict" }, 1, "", "ffmig: " ++ changed ++ "ffmig: nothing was migrated\n");
+
+    // A file older than the newest applied one still runs.
+    const create_teams = [2][]const u8{ "20260101120000_create_teams.mig", "migration CreateTeams { change { create_table :teams { } } }\n" };
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "db/" ++ create_teams[0], .data = create_teams[1] });
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101120000_create_teams.mig\n", "ffmig: warning: " ++ changed ++
+        "ffmig: note: db/20260101120000_create_teams.mig is older than the last applied migration 20260102000000\n");
+    try f.expectVersions("20260101000000,20260101120000,20260102000000");
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_add_role.mig\n", "");
 }

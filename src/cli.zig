@@ -27,10 +27,13 @@ pub const usage =
     \\  migrate        Apply every pending migration
     \\                   --lock-wait <s>  Wait up to s seconds for another run
     \\                                    to finish (default: 60)
+    \\                   --strict         Refuse to run if an applied file
+    \\                                    has changed since it ran
     \\  rollback       Undo the last applied migration
     \\                   --step <n>       Undo the last n instead
     \\                   --lock-wait <s>  As for migrate
-    \\  status         List migrations as up or down
+    \\  status         List migrations as up or down, with when each ran
+    \\                 and whether its file has changed since
     \\  help           Show this message
     \\
 ;

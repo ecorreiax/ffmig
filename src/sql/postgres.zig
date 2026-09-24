@@ -1,6 +1,6 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
-//! primary keys, literals, named defaults, the migration lock, timeouts
-//! and the database lookup.
+//! primary keys, literals, named defaults, the tracking table's catalog
+//! lookup, the migration lock, timeouts and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -107,6 +107,32 @@ pub fn timeout(w: *Writer, t: root.Timeout) Writer.Error!void {
         .lock => |ms| try w.print("SET lock_timeout = '{d}ms'", .{ms}),
         .statement => |ms| try w.print("SET statement_timeout = '{d}ms'", .{ms}),
     }
+}
+
+/// Type of the tracking table's `applied_at`: a point in time, whatever
+/// the session's time zone.
+pub const instant_type = "timestamptz";
+
+/// `to_regclass` finds the table the way an unqualified name in a
+/// statement does, so this checks the table that `select` and `insert`
+/// use. It reads `table` as SQL would read it unquoted, which is the same
+/// for a lowercase name.
+pub fn trackingCurrent(w: *Writer, table: []const u8, columns: []const []const u8) Writer.Error!void {
+    try w.writeAll("SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(");
+    try literal(w, .{ .string = table });
+    try w.writeAll(") AND NOT attisdropped AND attname IN (");
+    for (columns, 0..) |c, i| {
+        if (i > 0) try w.writeAll(", ");
+        try literal(w, .{ .string = c });
+    }
+    try w.print(") HAVING count(*) = {d}", .{columns.len});
+}
+
+/// Whole seconds since 1970 of a `timestamptz` column, null staying null.
+pub fn epochSeconds(w: *Writer, column: []const u8) Writer.Error!void {
+    try w.writeAll("floor(extract(epoch FROM ");
+    try identifier(w, column);
+    try w.writeAll("))::bigint");
 }
 
 pub fn databaseExists(w: *Writer, name: []const u8) Writer.Error!void {

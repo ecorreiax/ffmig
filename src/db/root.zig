@@ -19,13 +19,16 @@ pub const Diagnostic = struct {
     message: []const u8 = "",
 };
 
+/// One row of a query result: each column as text, null for SQL `NULL`.
+pub const Row = []const ?[]const u8;
+
 pub const Db = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
         exec: *const fn (ptr: *anyopaque, statement: []const u8, diag: *Diagnostic) Error!void,
-        query: *const fn (ptr: *anyopaque, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const []const u8,
+        query: *const fn (ptr: *anyopaque, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const Row,
         server: *const fn (ptr: *anyopaque) Server,
         close: *const fn (ptr: *anyopaque) void,
     };
@@ -42,9 +45,8 @@ pub const Db = struct {
         return db.vtable.exec(db.ptr, statement, diag);
     }
 
-    /// Runs one statement and returns the first column of each row, as
-    /// text allocated in `arena`.
-    pub fn query(db: Db, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const []const u8 {
+    /// Runs one statement and returns its rows, allocated in `arena`.
+    pub fn query(db: Db, arena: Allocator, statement: []const u8, diag: *Diagnostic) Error![]const Row {
         return db.vtable.query(db.ptr, arena, statement, diag);
     }
 

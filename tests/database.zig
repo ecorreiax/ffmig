@@ -77,11 +77,11 @@ const FakeDb = struct {
         f.log.writer.print("{s};\n", .{statement}) catch return error.OutOfMemory;
     }
 
-    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, _: *db.Diagnostic) db.Error![]const []const u8 {
+    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, _: *db.Diagnostic) db.Error![]const db.Row {
         const f: *FakeDb = @ptrCast(@alignCast(ptr));
         const found = if (std.mem.indexOf(u8, statement, "pg_db_role_setting") != null) f.protected else f.exists;
         f.log.writer.print("{s};\n", .{statement[0..@min(statement.len, 40)]}) catch return error.OutOfMemory;
-        return arena.dupe([]const u8, if (found) &.{"1"} else &.{});
+        return arena.dupe(db.Row, if (found) &.{&.{"1"}} else &.{});
     }
 
     fn server(_: *anyopaque) db.Db.Server {

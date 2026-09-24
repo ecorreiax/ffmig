@@ -20,6 +20,12 @@ const testing = std.testing;
 /// take it.
 const FakeDb = struct {
     applied: []const []const u8 = &.{},
+    /// The checksums of `applied`, in the same order; null past its end.
+    checksums: []const ?[]const u8 = &.{},
+    /// `applied_at` of every row, in seconds.
+    applied_at: ?[]const u8 = "1767225600",
+    /// Whether the tracking table lacks `checksum` and `applied_at`.
+    old_table: bool = false,
     fail_on: []const []const u8 = &.{},
     busy: usize = 0,
     log: Writer.Allocating,
@@ -47,17 +53,23 @@ const FakeDb = struct {
         f.log.writer.print("{s};\n", .{statement}) catch return error.OutOfMemory;
     }
 
-    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, _: *db.Diagnostic) db.Error![]const []const u8 {
+    fn query(ptr: *anyopaque, arena: Allocator, statement: []const u8, _: *db.Diagnostic) db.Error![]const db.Row {
         const f: *FakeDb = @ptrCast(@alignCast(ptr));
         std.debug.assert(std.mem.startsWith(u8, statement, "SELECT"));
+        const one: []const db.Row = &.{&.{"1"}};
         if (std.mem.indexOf(u8, statement, "pg_try_advisory_lock") != null) {
             f.log.writer.print("{s};\n", .{statement}) catch return error.OutOfMemory;
-            if (f.busy == 0) return arena.dupe([]const u8, &.{"1"});
+            if (f.busy == 0) return one;
             f.busy -= 1;
             return &.{};
         }
-        // Callers may sort the result in place.
-        return arena.dupe([]const u8, f.applied);
+        if (std.mem.indexOf(u8, statement, "pg_attribute") != null) return if (f.old_table) &.{} else one;
+        const rows = try arena.alloc(db.Row, f.applied.len);
+        for (rows, f.applied, 0..) |*row, version, i| {
+            const sum = if (i < f.checksums.len) f.checksums[i] else null;
+            row.* = try arena.dupe(?[]const u8, &.{ version, sum, f.applied_at });
+        }
+        return rows;
     }
 
     fn server(_: *anyopaque) db.Db.Server {
@@ -101,7 +113,7 @@ fn runIn(dir: Io.Dir, fake: *FakeDb, command: Command) !Result {
     r.code = switch (command) {
         .migrate => |o| try commands.migrate.migrate(env, arena, project, conn, o, out, err),
         .rollback => |o| try commands.rollback.rollback(env, arena, project, conn, o, out, err),
-        .status => try commands.status.status(arena, project, conn, out, err),
+        .status => try commands.status.status(testing.io, arena, project, conn, out, err),
     };
     return r;
 }
@@ -166,7 +178,13 @@ const drop_legacy = [2][]const u8{
 
 const lock = "SELECT 1 WHERE pg_try_advisory_lock(439805110631);\n";
 const unlock = "SELECT pg_advisory_unlock(439805110631);\n";
-const tracking_create = "CREATE TABLE IF NOT EXISTS \"schema_migrations\" (\"version\" varchar PRIMARY KEY);\n";
+const tracking_create = "CREATE TABLE IF NOT EXISTS \"schema_migrations\" (\"version\" varchar PRIMARY KEY, \"checksum\" varchar, \"applied_at\" timestamptz DEFAULT CURRENT_TIMESTAMP);\n";
+
+// `shasum -a 256` of the files above.
+const create_users_sum = "55c09ebe26609cd2d89d7efb64e9611ac8e043cb52d4404c156a5ea6160fad28";
+const add_role_sum = "91ad7ffee54b6319dd2d0a72873756fe80e1aedde38889bb24d9ad7b5e406c73";
+const drop_legacy_sum = "7455cbe88c5d070cf90326d7f632eaf3ef28f64cdafb9657d84a41f278db0fb0";
+const add_slug_sum = "d6ebe881d31d1ae849cd89b6e2fd4812326d2c01ae6cbc17adf8cc9b4166266d";
 
 test "pending keeps unrecorded files in order" {
     const files = [_]migrations.File{
@@ -184,7 +202,9 @@ test "pending keeps unrecorded files in order" {
     for (cases) |c| {
         var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
         defer arena_state.deinit();
-        const pending = try migrations.pending(arena_state.allocator(), &files, c.applied);
+        const applied = try arena_state.allocator().alloc(migrations.Applied, c.applied.len);
+        for (applied, c.applied) |*a, v| a.* = .{ .version = v, .checksum = null, .applied_at = null };
+        const pending = try migrations.pending(arena_state.allocator(), &files, applied);
         var names: [3]u8 = undefined;
         for (pending, 0..) |f, i| names[i] = f.name[0];
         try testing.expectEqualStrings(c.expected, names[0..pending.len]);
@@ -210,11 +230,15 @@ test "migrate runs each pending migration in its own transaction" {
         \\BEGIN;
         \\ALTER TABLE "users" ADD COLUMN "role" integer;
         \\CREATE INDEX "index_users_on_role" ON "users" ("role");
-        \\INSERT INTO "schema_migrations" ("version") VALUES ('20260102000000');
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260102000000', '
+    ++ add_role_sum ++
+        \\');
         \\COMMIT;
         \\BEGIN;
         \\DROP TABLE "legacy";
-        \\INSERT INTO "schema_migrations" ("version") VALUES ('20260103000000');
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260103000000', '
+    ++ drop_legacy_sum ++
+        \\');
         \\COMMIT;
         \\
     ++ unlock, fake.log.written());
@@ -318,7 +342,9 @@ test "migrate stops at a failing statement and rolls its migration back" {
         \\  "id" bigserial PRIMARY KEY,
         \\  "email" varchar NOT NULL
         \\);
-        \\INSERT INTO "schema_migrations" ("version") VALUES ('20260101000000');
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260101000000', '
+    ++ create_users_sum ++
+        \\');
         \\COMMIT;
         \\BEGIN;
         \\ALTER TABLE "users" ADD COLUMN "role" integer;
@@ -371,7 +397,9 @@ test "transaction: false runs the migration without BEGIN and COMMIT, both ways"
     try testing.expectEqualStrings(lock ++ tracking_create ++
         \\ALTER TABLE "users" ADD COLUMN "slug" varchar;
         \\CREATE UNIQUE INDEX "index_users_on_slug" ON "users" ("slug");
-        \\INSERT INTO "schema_migrations" ("version") VALUES ('20260104000000');
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260104000000', '
+    ++ add_slug_sum ++
+        \\');
         \\
     ++ unlock, fake.log.written());
 
@@ -555,17 +583,113 @@ test "status lists files as up or down, and recorded versions without a file" {
     defer tmp.cleanup();
     var fake: FakeDb = .init(&.{ "20260102000000", "20260101000000", "20260109000000" });
     defer fake.deinit();
+    fake.checksums = &.{ "0000", create_users_sum, "1111" };
+
+    var r = try runIn(tmp.dir, &fake, .status);
+    defer r.deinit();
+    try testing.expectEqualStrings("", r.err.written());
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings(
+        \\up    2026-01-01 00:00:00 UTC  db/20260101000000_create_users.mig
+        \\up    2026-01-01 00:00:00 UTC  db/20260102000000_add_role.mig (changed)
+        \\down                           db/20260103000000_drop_legacy.mig
+        \\up    2026-01-01 00:00:00 UTC  20260109000000 (no file)
+        \\
+    , r.out.written());
+}
+
+test "status upgrades a tracking table from before checksums" {
+    var tmp = try setup(&.{ create_users, add_role });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+    fake.old_table = true;
+    fake.applied_at = null;
 
     var r = try runIn(tmp.dir, &fake, .status);
     defer r.deinit();
     try testing.expectEqual(0, r.code);
+    // Neither a time nor a checksum to compare with.
     try testing.expectEqualStrings(
-        \\up    db/20260101000000_create_users.mig
-        \\up    db/20260102000000_add_role.mig
-        \\down  db/20260103000000_drop_legacy.mig
-        \\up    20260109000000 (no file)
+        \\up                             db/20260101000000_create_users.mig
+        \\down                           db/20260102000000_add_role.mig
         \\
     , r.out.written());
+    try testing.expectEqualStrings(tracking_create ++
+        \\ALTER TABLE "schema_migrations" ADD COLUMN IF NOT EXISTS "checksum" varchar, ADD COLUMN IF NOT EXISTS "applied_at" timestamptz, ALTER COLUMN "applied_at" SET DEFAULT CURRENT_TIMESTAMP;
+        \\
+    , fake.log.written());
+}
+
+test "status does not flag a file checked out with CRLF line endings" {
+    const crlf = try std.mem.replaceOwned(u8, testing.allocator, create_users[1], "\n", "\r\n");
+    defer testing.allocator.free(crlf);
+    var tmp = try setup(&.{.{ create_users[0], crlf }});
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{"20260101000000"});
+    defer fake.deinit();
+    fake.checksums = &.{create_users_sum};
+
+    var r = try runIn(tmp.dir, &fake, .status);
+    defer r.deinit();
+    try testing.expectEqualStrings("up    2026-01-01 00:00:00 UTC  db/20260101000000_create_users.mig\n", r.out.written());
+}
+
+test "checksum is the SHA-256 of the source with CRLF read as LF" {
+    try testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &migrations.checksum("abc"));
+    try testing.expectEqualStrings(&migrations.checksum("a\nb\n"), &migrations.checksum("a\r\nb\r\n"));
+    // A lone CR is content.
+    try testing.expect(!std.mem.eql(u8, &migrations.checksum("a\nb"), &migrations.checksum("a\rb")));
+    try testing.expect(!std.mem.eql(u8, &migrations.checksum("a\n"), &migrations.checksum("a\r\r\n")));
+}
+
+test "migrate warns about applied files that changed, and --strict refuses them" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    const warning = "db/20260101000000_create_users.mig has changed since it was applied; its changes will not run\n";
+
+    var fake: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer fake.deinit();
+    // add_role has no checksum to compare with.
+    fake.checksums = &.{ "0000", null };
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings("ffmig: warning: " ++ warning, r.err.written());
+    try testing.expectEqualStrings("Migrated db/20260103000000_drop_legacy.mig\n", r.out.written());
+
+    var strict: FakeDb = .init(&.{ "20260101000000", "20260102000000" });
+    defer strict.deinit();
+    strict.checksums = &.{ "0000", null };
+    var rs = try runIn(tmp.dir, &strict, .{ .migrate = .{ .strict = true } });
+    defer rs.deinit();
+    try testing.expectEqual(1, rs.code);
+    try testing.expectEqualStrings("ffmig: " ++ warning ++ "ffmig: nothing was migrated\n", rs.err.written());
+    try testing.expectEqualStrings("", rs.out.written());
+    try testing.expectEqualStrings(lock ++ tracking_create ++ unlock, strict.log.written());
+
+    // Unchanged files pass --strict.
+    var clean: FakeDb = .init(&.{ "20260101000000", "20260102000000", "20260103000000" });
+    defer clean.deinit();
+    clean.checksums = &.{ create_users_sum, add_role_sum, drop_legacy_sum };
+    var rc = try runIn(tmp.dir, &clean, .{ .migrate = .{ .strict = true } });
+    defer rc.deinit();
+    try testing.expectEqual(0, rc.code);
+    try testing.expectEqualStrings("", rc.err.written());
+    try testing.expectEqualStrings("Nothing to migrate\n", rc.out.written());
+}
+
+test "migrate notes a pending file older than the last applied one and runs it" {
+    var tmp = try setup(&.{ create_users, add_role, drop_legacy });
+    defer tmp.cleanup();
+    var fake: FakeDb = .init(&.{ "20260102000000", "20260103000000" });
+    defer fake.deinit();
+
+    var r = try runIn(tmp.dir, &fake, .{ .migrate = .{} });
+    defer r.deinit();
+    try testing.expectEqual(0, r.code);
+    try testing.expectEqualStrings("ffmig: note: db/20260101000000_create_users.mig is older than the last applied migration 20260103000000\n", r.err.written());
+    try testing.expectEqualStrings("Migrated db/20260101000000_create_users.mig\n", r.out.written());
 }
 
 test "project load rejects bad file names and duplicate versions" {
@@ -627,6 +751,9 @@ test "migrate and rollback accept their flags" {
     const env: Env = .{ .io = testing.io, .cwd = tmp.dir, .gpa = testing.allocator };
     const cases = .{
         .{ commands.migrate, &[_][]const u8{ "--lock-wait", "0" } },
+        .{ commands.migrate, &[_][]const u8{"--strict"} },
+        .{ commands.migrate, &[_][]const u8{ "--strict", "--lock-wait", "0" } },
+        .{ commands.migrate, &[_][]const u8{ "--lock-wait", "0", "--strict" } },
         .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "2" } },
         .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait", "120" } },
     };
@@ -655,6 +782,9 @@ test "rollback and migrate reject extra arguments" {
         .{ commands.migrate, &[_][]const u8{"--lock-wait"} },
         .{ commands.migrate, &[_][]const u8{ "--lock-wait", "-1" } },
         .{ commands.migrate, &[_][]const u8{ "--lock-wait", "1s" } },
+        .{ commands.migrate, &[_][]const u8{ "--strict", "true" } },
+        .{ commands.migrate, &[_][]const u8{ "--lock-wait", "--strict" } },
+        .{ commands.rollback, &[_][]const u8{"--strict"} },
         .{ commands.rollback, &[_][]const u8{ "--step", "2", "--lock-wait" } },
         .{ commands.rollback, &[_][]const u8{ "--lock-wait", "5", "--step", "0" } },
     };
