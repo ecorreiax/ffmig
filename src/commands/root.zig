@@ -15,6 +15,8 @@ pub const migrate = @import("migrate.zig");
 pub const rollback = @import("rollback.zig");
 pub const redo = @import("redo.zig");
 pub const status = @import("status.zig");
+pub const dump = @import("dump.zig");
+pub const load = @import("load.zig");
 pub const create = @import("create.zig");
 pub const drop = @import("drop.zig");
 pub const protect = @import("protect.zig");
@@ -42,7 +44,41 @@ pub const Env = struct {
     /// `--url`: the database URL, which beats `FFMIG_DATABASE_URL` and
     /// the config's. `init` writes it to the config instead.
     url: ?[]const u8 = null,
+    /// Runs another program, for `dump`, which runs `pg_dump`. Tests
+    /// replace it.
+    run_program: *const RunProgram = runProgram,
 };
+
+/// Runs `argv` to completion with `environ` as its whole environment,
+/// and returns its output, allocated in `arena`.
+pub const RunProgram = fn (io: Io, arena: Allocator, argv: []const []const u8, environ: *const std.process.Environ.Map) ProgramError!ProgramResult;
+
+pub const ProgramError = error{ ProgramNotFound, CannotRunProgram, OutOfMemory };
+
+pub const ProgramResult = struct {
+    /// Null when the program did not exit on its own, e.g. on a signal.
+    exit_code: ?u8,
+    stdout: []const u8,
+    stderr: []const u8,
+};
+
+/// `RunProgram` on the real process: looks `argv[0]` up in `PATH`
+/// unless it holds a `/`.
+pub fn runProgram(io: Io, arena: Allocator, argv: []const []const u8, environ: *const std.process.Environ.Map) ProgramError!ProgramResult {
+    const result = std.process.run(arena, io, .{ .argv = argv, .environ_map = environ }) catch |e| return switch (e) {
+        error.FileNotFound => error.ProgramNotFound,
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.CannotRunProgram,
+    };
+    return .{
+        .exit_code = switch (result.term) {
+            .exited => |code| code,
+            else => null,
+        },
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+    };
+}
 
 pub const Command = enum {
     init,
@@ -57,6 +93,8 @@ pub const Command = enum {
     rollback,
     redo,
     status,
+    dump,
+    load,
     help,
     version,
 };
@@ -70,7 +108,7 @@ pub const Globals = struct {
 
     pub fn of(command: Command) Globals {
         return switch (command) {
-            .init, .create, .drop, .protect, .unprotect, .migrate, .rollback, .redo, .status => .{ .config = true, .url = true },
+            .init, .create, .drop, .protect, .unprotect, .migrate, .rollback, .redo, .status, .dump, .load => .{ .config = true, .url = true },
             .new, .check => .{ .config = true },
             .sql, .help, .version => .{},
         };
@@ -111,6 +149,8 @@ pub fn usage(command: Command) []const u8 {
         .rollback => rollback.usage,
         .redo => redo.usage,
         .status => status.usage,
+        .dump => dump.usage,
+        .load => load.usage,
         .help => help_usage,
         .version => version_usage,
     };
@@ -133,6 +173,8 @@ pub fn run(env: Env, command: Command, args: []const []const u8, out: *Writer, e
         .rollback => rollback.run(env, args, out, err),
         .redo => redo.run(env, args, out, err),
         .status => status.run(env, args, out, err),
+        .dump => dump.run(env, args, out, err),
+        .load => load.run(env, args, out, err),
         .help, .version => unreachable,
     };
 }

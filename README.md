@@ -129,6 +129,8 @@ migrate         # Apply every pending migration
 rollback        # Undo the last applied migration
 redo            # Undo the last applied migration and apply it again
 status          # List migrations as up or down, with when each ran
+dump            # Write the database schema to schema.sql
+load            # Create the schema from schema.sql in an empty database
 help            # Show this message, or a command's flags
 version         # Print the version
 ```
@@ -152,7 +154,30 @@ version         # Print the version
 - `--step <n>`: Act on the last `n` migrations instead of one
 - `--lock-wait <s>`: Wait up to `s` seconds for another run to finish (default: 60; 0: do not wait)
 
+#### Load
+- `--force`: Load even if the database already records applied migrations
+
 A migration that needs statements which cannot run in a transaction, such as `add_index ..., algorithm: :concurrently`, declares `transaction: false`; its statements then run one at a time. See [MIG.md](MIG.md).
+
+### Schema dump
+
+`ffmig dump` writes the database's schema to `schema.sql`, as `pg_dump --schema-only` prints it, followed by the migrations it has applied. Committing it makes each pull request show what a migration really changed:
+
+```sh
+$ ffmig dump
+Dumped the schema to schema.sql
+```
+
+`ffmig load` creates that schema in an empty database, with its migrations recorded as applied, which is faster than replaying every migration for a new development or test database:
+
+```sh
+$ ffmig create
+Created database app_test
+$ ffmig load
+Loaded the schema from schema.sql
+```
+
+FFMig removes from the file what changes from one run or one `pg_dump` version to the next (its version numbers, settings and random keys), so dumping the same schema twice gives the same file. `dump` runs `pg_dump`, which comes with the PostgreSQL client tools (not with FFMig, nor in its Docker image) and must be the same major version as the server or newer.
 
 ## Configuration
 
@@ -190,7 +215,18 @@ url = "${DATABASE_URL}"
 schema = "billing"
 ```
 
-Every command that connects then works in that schema only: migrations create their tables there, and `schema_migrations` lives there too. The `.mig` files stay the same. FFMig does not create the schema; create it once with `CREATE SCHEMA billing`.
+Every command that connects then works in that schema only: migrations create their tables there, and `schema_migrations` lives there too. The `.mig` files stay the same. FFMig does not create the schema; create it once with `CREATE SCHEMA billing`. `dump` then dumps only that schema.
+
+`[dump]` configures `dump` and `load`, and is optional:
+
+```toml
+[dump]
+path = "db/schema.sql"    # Where dump writes and load reads (default: schema.sql)
+pg_dump = "/opt/homebrew/opt/postgresql@17/bin/pg_dump"   # The pg_dump to run (default: pg_dump on PATH)
+auto = true               # Dump after every migrate, rollback and redo
+```
+
+`path` is relative to the config file. With `auto = true`, a `migrate`, `rollback` or `redo` that changes the database writes the file too, so it never falls behind the migrations.
 
 ## Contributing
 

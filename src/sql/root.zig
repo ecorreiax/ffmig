@@ -83,7 +83,19 @@ pub const Tracking = union(enum) {
     select,
     insert: struct { version: []const u8, checksum: []const u8 },
     delete: []const u8,
+    /// Selects the name of the schema that holds the table, no row when
+    /// there is no table.
+    schema,
+    /// Selects one row if the table has any.
+    any,
+    /// Inserts `rows`, at least one, into the table in `schema`, for
+    /// `ffmig dump`, whose file does not depend on the search path. They
+    /// get the time of the insert as `applied_at`.
+    insert_all: struct { schema: []const u8, rows: []const TrackingRow },
 };
+
+/// A row that `Tracking.insert_all` writes.
+pub const TrackingRow = struct { version: []const u8, checksum: ?[]const u8 };
 
 /// The columns after `version`, which `upgrade` adds to an older table.
 const tracking_columns = [_][]const u8{ "checksum", "applied_at" };
@@ -159,6 +171,30 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
             try D.identifier(w, "version");
             try w.writeAll(" = ");
             try D.literal(w, .{ .string = v });
+        },
+        .schema => try D.trackingSchema(w, tracking_table),
+        .any => {
+            try w.writeAll("SELECT 1 FROM ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" LIMIT 1");
+        },
+        .insert_all => |all| {
+            try w.writeAll("INSERT INTO ");
+            try D.identifier(w, all.schema);
+            try w.writeByte('.');
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" (");
+            try D.identifier(w, "version");
+            try w.writeAll(", ");
+            try D.identifier(w, "checksum");
+            try w.writeAll(") VALUES");
+            for (all.rows, 0..) |row, i| {
+                try w.writeAll(if (i == 0) "\n(" else ",\n(");
+                try D.literal(w, .{ .string = row.version });
+                try w.writeAll(", ");
+                try D.literal(w, if (row.checksum) |c| .{ .string = c } else .nil);
+                try w.writeByte(')');
+            }
         },
     }
 }

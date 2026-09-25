@@ -202,6 +202,14 @@ pub fn trackingCurrent(w: *Writer, table: []const u8, columns: []const []const u
     try w.print(") HAVING count(*) = {d}", .{columns.len});
 }
 
+/// The schema of the table that an unqualified `table` names, which is
+/// where `select` and `insert` find it.
+pub fn trackingSchema(w: *Writer, table: []const u8) Writer.Error!void {
+    try w.writeAll("SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass(");
+    try literal(w, .{ .string = table });
+    try w.writeByte(')');
+}
+
 /// Whole seconds since 1970 of a `timestamptz` column, null staying null.
 pub fn epochSeconds(w: *Writer, column: []const u8) Writer.Error!void {
     try w.writeAll("floor(extract(epoch FROM ");

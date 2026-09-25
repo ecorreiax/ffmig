@@ -16,6 +16,7 @@ const Env = @import("root.zig").Env;
 const check = @import("check.zig");
 const migrations = @import("migrations.zig");
 const flags = @import("flags.zig");
+const dump = @import("dump.zig");
 const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 
@@ -139,6 +140,7 @@ pub fn rollback(
         if (!try undo(arena, conn, u, err)) return 1;
         try out.print("Rolled back {s}\n", .{u.parsed.path});
     }
+    if (!options.dry_run and !try dump.after(env, arena, project, conn, out, err)) return 1;
     return 0;
 }
 

@@ -16,6 +16,7 @@ const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
 const rollback = @import("rollback.zig");
 const flags = @import("flags.zig");
+const dump = @import("dump.zig");
 
 pub const usage =
     \\Usage:
@@ -110,5 +111,6 @@ pub fn redo(
         if (!try migrations.apply(arena, conn, p.path, p.up(), p.insert(), p.migration.transaction, err)) return 1;
         try out.print("Migrated {s}\n", .{p.path});
     }
+    if (!try dump.after(env, arena, project, conn, out, err)) return 1;
     return 0;
 }

@@ -33,6 +33,8 @@ pub const Project = struct {
     /// `[database] schema`, the schema that holds the tables.
     schema: ?[]const u8,
     timeouts: config.Timeouts,
+    /// `[dump]`, with its `path` relative to `env.cwd`.
+    dump: config.Dump,
     /// In version order.
     files: []const File,
 
@@ -49,7 +51,7 @@ pub const Project = struct {
             dir.close(env.io);
             return null;
         };
-        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .schema = cfg.schema, .timeouts = cfg.timeouts, .files = files };
+        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .schema = cfg.schema, .timeouts = cfg.timeouts, .dump = cfg.dump, .files = files };
     }
 
     /// Connects to the project's database (see `connect`) and switches to
@@ -184,8 +186,9 @@ pub fn checksum(source: []const u8) Checksum {
 }
 
 /// Loads the config file (`ffmig.toml` or `--config`), reporting
-/// problems to `err` and returning null. Its `path` comes back relative
-/// to `env.cwd`, not to the config file.
+/// problems to `err` and returning null. Its `path` and `dump.path`
+/// come back relative to `env.cwd`, not to the config file, and
+/// `dump.path` and `dump.pg_dump` are set.
 pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config.Config {
     var diag: config.Diagnostics = .{};
     var cfg = config.load(env.io, env.cwd, env.config, arena, &diag) catch |e| {
@@ -193,6 +196,7 @@ pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config
             error.FileNotFound => try err.print("ffmig: {s} not found; run 'ffmig init' first\n", .{env.config}),
             error.InvalidSyntax => try err.print("ffmig: {s}:{d}: invalid syntax\n", .{ env.config, diag.line }),
             error.InvalidTimeout => try err.print("ffmig: {s}:{d}: {s} must be a duration such as \"5s\" or \"500ms\", or \"0\" for no limit\n", .{ env.config, diag.line, diag.key }),
+            error.InvalidBool => try err.print("ffmig: {s}:{d}: {s} must be true or false\n", .{ env.config, diag.line, diag.key }),
             else => try err.print("ffmig: cannot read {s}: {t}\n", .{ env.config, e }),
         }
         return null;
@@ -201,6 +205,11 @@ pub fn loadConfig(env: Env, arena: Allocator, err: *Writer) Writer.Error!?config
         try outOfMemory(err);
         return null;
     };
+    cfg.dump.path = config.resolvePath(arena, env.config, cfg.dump.path orelse config.default_dump_path) catch {
+        try outOfMemory(err);
+        return null;
+    };
+    if (cfg.dump.pg_dump == null) cfg.dump.pg_dump = config.default_pg_dump;
     return cfg;
 }
 
@@ -251,7 +260,13 @@ fn orderVersion(key: []const u8, item: Applied) std.math.Order {
     return std.mem.order(u8, key, item.version);
 }
 
-pub const Connection = struct { db: db.Db, dialect: db.Dialect };
+pub const Connection = struct {
+    db: db.Db,
+    dialect: db.Dialect,
+    /// The URL it was opened with, for programs such as `pg_dump` that
+    /// connect on their own.
+    url: []const u8 = "",
+};
 
 /// Picks the database URL and connects. Reports problems to `err` and
 /// returns null. Never prints the URL, which may hold a password.
@@ -328,7 +343,7 @@ pub fn open(arena: Allocator, url: Url, err: *Writer) Writer.Error!?Connection {
         try dbError(e, err, "cannot connect to the database", diag);
         return null;
     };
-    return .{ .db = conn, .dialect = url.dialect };
+    return .{ .db = conn, .dialect = url.dialect, .url = url.url };
 }
 
 /// Makes `schema` the one that holds the tables for the rest of the

@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const sql = @import("../sql/root.zig");
 
 pub const postgres = @import("postgres.zig");
+pub const pg_dump = @import("pg_dump.zig");
 
 pub const Dialect = sql.Dialect;
 

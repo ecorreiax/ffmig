@@ -1041,10 +1041,113 @@ test "[database] schema holds the tables" {
     );
     try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_add_role.mig\n", "");
     try f.expectQuery("SELECT version FROM billing.schema_migrations ORDER BY version", "20260101000000,20260102000000");
+
+    // The dump holds only the schema, and loads into a database without it.
+    try f.expectRun(&.{"dump"}, 0, "Dumped the schema to schema.sql\n", "");
+    const arena = f.arena_state.allocator();
+    const dumped = try f.tmp.dir.readFileAlloc(testing.io, "schema.sql", arena, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, dumped, "CREATE SCHEMA IF NOT EXISTS billing;") != null);
+    try testing.expect(std.mem.indexOf(u8, dumped, "INSERT INTO \"billing\".\"schema_migrations\"") != null);
+    const host = testing.environ.getPosix("FFMIG_TEST_PGHOST").?;
+    var admin = try connect(arena, host, "postgres");
+    defer admin.close();
+    try exec(admin, "CREATE DATABASE schema_config_copy");
+    const copy = try std.mem.concat(arena, u8, &.{ "--url=", try url(arena, host, "schema_config_copy") });
+    try f.expectRun(&.{ "load", copy }, 0, "Loaded the schema from schema.sql\n", "");
+    try f.expectRun(&.{ "status", copy }, 0,
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig
+        \\
+    , "");
+    try exec(admin, "DROP DATABASE schema_config_copy");
     try f.expectRun(&.{ "rollback", "--step", "2" }, 0,
         \\Rolled back db/20260102000000_add_role.mig
         \\Rolled back db/20260101000000_create_users.mig
         \\
     , "");
     try f.expectQuery("SELECT table_name FROM information_schema.tables WHERE table_schema = 'billing'", "schema_migrations");
+}
+
+test "dump, then load into an empty database" {
+    var f: Fixture = try .init("dump_source", &.{ create_users, add_role });
+    defer f.deinit();
+    const arena = f.arena_state.allocator();
+    const host = testing.environ.getPosix("FFMIG_TEST_PGHOST").?;
+
+    try f.expectRun(&.{"migrate"}, 0,
+        \\Migrated db/20260101000000_create_users.mig
+        \\Migrated db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectRun(&.{"dump"}, 0, "Dumped the schema to schema.sql\n", "");
+    const first = try f.tmp.dir.readFileAlloc(testing.io, "schema.sql", arena, .unlimited);
+    try testing.expect(std.mem.startsWith(u8, first, ffmig.db.pg_dump.preamble));
+    try testing.expect(std.mem.indexOf(u8, first, "CREATE TABLE public.users (") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "CREATE INDEX index_users_on_role ON public.users USING btree (role);") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\\restrict") == null);
+    try testing.expect(std.mem.endsWith(u8, first, "INSERT INTO \"public\".\"schema_migrations\" (\"version\", \"checksum\") VALUES\n" ++
+        "('20260101000000', '" ++ comptime checksumHex(create_users[1]) ++ "'),\n" ++
+        "('20260102000000', '" ++ checksumHex(add_role[1]) ++ "');\n"));
+
+    // A second database, loaded from the file.
+    var admin = try connect(arena, host, "postgres");
+    defer admin.close();
+    try exec(admin, "CREATE DATABASE dump_copy");
+    const copy = try std.mem.concat(arena, u8, &.{ "--url=", try url(arena, host, "dump_copy") });
+    try f.expectRun(&.{ "load", copy }, 0, "Loaded the schema from schema.sql\n", "");
+    try f.expectRun(&.{ "status", copy }, 0,
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260101000000_create_users.mig
+        \\up    YYYY-MM-DD HH:MM:SS UTC  db/20260102000000_add_role.mig
+        \\
+    , "");
+    try f.expectRun(&.{ "migrate", copy }, 0, "Nothing to migrate\n", "");
+    try f.expectRun(&.{ "load", copy }, 1, "", "ffmig: the database already records applied migrations; load schema.sql into an empty database, or pass --force\n");
+
+    // The copy dumps to the same file.
+    try f.expectRun(&.{ "dump", copy }, 0, "Dumped the schema to schema.sql\n", "");
+    const second = try f.tmp.dir.readFileAlloc(testing.io, "schema.sql", arena, .unlimited);
+    try testing.expectEqualStrings(first, second);
+    // And it rolls back like the original.
+    try f.expectRun(&.{ "rollback", copy }, 0, "Rolled back db/20260102000000_add_role.mig\n", "");
+    try exec(admin, "DROP DATABASE dump_copy");
+}
+
+test "[dump] auto dumps after migrate and rollback" {
+    var f: Fixture = try .init("dump_auto", &.{create_users});
+    defer f.deinit();
+    try f.tmp.dir.writeFile(testing.io, .{
+        .sub_path = config.file_name,
+        .data = "[migration]\npath = \"db\"\n\n[database]\nurl = \"${DATABASE_URL}\"\n\n[dump]\npath = \"db/structure.sql\"\nauto = true\n",
+    });
+    try f.expectRun(&.{ "migrate", "--dry-run" }, 0,
+        \\-- db/20260101000000_create_users.mig
+        \\BEGIN;
+        \\CREATE TABLE "users" (
+        \\  "id" bigserial PRIMARY KEY,
+        \\  "email" varchar NOT NULL
+        \\);
+        \\INSERT INTO "schema_migrations" ("version", "checksum") VALUES ('20260101000000', '
+    ++ comptime checksumHex(create_users[1]) ++
+        \\');
+        \\COMMIT;
+        \\
+    , "");
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260101000000_create_users.mig\nDumped the schema to db/structure.sql\n", "");
+    const arena = f.arena_state.allocator();
+    try testing.expect(std.mem.indexOf(u8, try f.tmp.dir.readFileAlloc(testing.io, "db/structure.sql", arena, .unlimited), "CREATE TABLE public.users (") != null);
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260101000000_create_users.mig\nDumped the schema to db/structure.sql\n", "");
+    try testing.expect(std.mem.indexOf(u8, try f.tmp.dir.readFileAlloc(testing.io, "db/structure.sql", arena, .unlimited), "CREATE TABLE public.users (") == null);
+
+    // A pg_dump that cannot be found.
+    try f.tmp.dir.writeFile(testing.io, .{
+        .sub_path = config.file_name,
+        .data = "[migration]\npath = \"db\"\n\n[database]\nurl = \"${DATABASE_URL}\"\n\n[dump]\npg_dump = \"/nonexistent/pg_dump\"\n",
+    });
+    try f.expectRun(&.{"dump"}, 1, "", "ffmig: cannot run /nonexistent/pg_dump: not found; install the PostgreSQL client tools, or set [dump] pg_dump in ffmig.toml\n");
+}
+
+/// The checksum `migrate` records for a file with `source`.
+fn checksumHex(comptime source: []const u8) [64]u8 {
+    @setEvalBranchQuota(100_000);
+    return ffmig.commands.migrations.checksum(source);
 }
