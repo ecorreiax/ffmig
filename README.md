@@ -182,6 +182,16 @@ The timeouts take a whole number followed by `ms`, `s`, `min` or `h`, such as `"
 
 Setting `lock_timeout` is worth it in production: a migration stuck behind a long query's lock otherwise makes every query after it wait too. With a timeout, the migration fails, is undone, and stays pending to run again later.
 
+To keep the tables in a PostgreSQL schema other than the default one, name it in `[database]`:
+
+```toml
+[database]
+url = "${DATABASE_URL}"
+schema = "billing"
+```
+
+Every command that connects then works in that schema only: migrations create their tables there, and `schema_migrations` lives there too. The `.mig` files stay the same. FFMig does not create the schema; create it once with `CREATE SCHEMA billing`.
+
 ## Contributing
 
 Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) provides all the information on how to set up the development environment, run the tests and open a pull request.

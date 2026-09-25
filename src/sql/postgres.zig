@@ -1,7 +1,7 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
 //! primary keys, literals, named defaults, the renames that follow a
 //! renamed table, the tracking table's catalog lookup, the migration
-//! lock, timeouts and the database lookup.
+//! lock, timeouts, the schema and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -207,6 +207,21 @@ pub fn epochSeconds(w: *Writer, column: []const u8) Writer.Error!void {
     try w.writeAll("floor(extract(epoch FROM ");
     try identifier(w, column);
     try w.writeAll("))::bigint");
+}
+
+/// `search_path` holds only the schema, so tables are neither found nor
+/// created anywhere else.
+pub fn schema(w: *Writer, s: root.Schema) Writer.Error!void {
+    switch (s) {
+        .exists => |name| {
+            try w.writeAll("SELECT 1 FROM pg_namespace WHERE nspname = ");
+            try literal(w, .{ .string = name });
+        },
+        .use => |name| {
+            try w.writeAll("SET search_path TO ");
+            try identifier(w, name);
+        },
+    }
 }
 
 pub fn databaseExists(w: *Writer, name: []const u8) Writer.Error!void {

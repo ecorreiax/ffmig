@@ -43,6 +43,19 @@ test "ignores keys in other sections" {
     try expectParse("path = \"nope\"\n[other]\npath = \"nope\"\n", default_path, null);
 }
 
+test "reads the schema, empty meaning unset" {
+    var diag: Diagnostics = .{};
+    var c = try parse(testing.allocator, "[database]\nschema = \"billing\"\n", &diag);
+    try testing.expectEqualStrings("billing", c.schema.?);
+    c.deinit(testing.allocator);
+    c = try parse(testing.allocator, "[database]\nschema = \"\"\n", &diag);
+    try testing.expectEqual(null, c.schema);
+    c.deinit(testing.allocator);
+    c = try parse(testing.allocator, "[migration]\nschema = \"billing\"\n", &diag);
+    defer c.deinit(testing.allocator);
+    try testing.expectEqual(null, c.schema);
+}
+
 test "reads the timeouts in milliseconds" {
     var diag: Diagnostics = .{};
     var c = try parse(testing.allocator,

@@ -14,6 +14,7 @@ const fs = @import("../utils/fs.zig");
 const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 const db = @import("../db/root.zig");
+const migrations = @This();
 
 pub const File = struct {
     /// File name inside the migrations directory.
@@ -29,6 +30,8 @@ pub const Project = struct {
     dir: Io.Dir,
     /// Database URL as configured, before `${VAR}` expansion.
     url: ?[]const u8,
+    /// `[database] schema`, the schema that holds the tables.
+    schema: ?[]const u8,
     timeouts: config.Timeouts,
     /// In version order.
     files: []const File,
@@ -46,7 +49,18 @@ pub const Project = struct {
             dir.close(env.io);
             return null;
         };
-        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .timeouts = cfg.timeouts, .files = files };
+        return .{ .path = cfg.path, .dir = dir, .url = cfg.url, .schema = cfg.schema, .timeouts = cfg.timeouts, .files = files };
+    }
+
+    /// Connects to the project's database (see `connect`) and switches to
+    /// its schema, if it names one (see `useSchema`).
+    pub fn connect(p: Project, env: Env, arena: Allocator, err: *Writer) Writer.Error!?Connection {
+        const conn = try migrations.connect(env, arena, p.url, err) orelse return null;
+        if (!try useSchema(arena, conn, p.schema, err)) {
+            conn.db.close();
+            return null;
+        }
+        return conn;
     }
 
     fn listFiles(io: Io, arena: Allocator, dir: Io.Dir, path: []const u8, err: *Writer) Writer.Error!?[]const File {
@@ -315,6 +329,37 @@ pub fn open(arena: Allocator, url: Url, err: *Writer) Writer.Error!?Connection {
         return null;
     };
     return .{ .db = conn, .dialect = url.dialect };
+}
+
+/// Makes `schema` the one that holds the tables for the rest of the
+/// session, after checking that it exists: ffmig never creates it.
+/// Does nothing when `schema` is null. Reports failure to `err` and
+/// returns false.
+pub fn useSchema(arena: Allocator, conn: Connection, schema: ?[]const u8, err: *Writer) Writer.Error!bool {
+    const name = schema orelse return true;
+    var exists: Writer.Allocating = .init(arena);
+    var use: Writer.Allocating = .init(arena);
+    sql.writeSchema(conn.dialect, .{ .exists = name }, &exists.writer) catch return oomFalse(err);
+    sql.writeSchema(conn.dialect, .{ .use = name }, &use.writer) catch return oomFalse(err);
+    var diag: db.Diagnostic = .{};
+    const rows = conn.db.query(arena, exists.written(), &diag) catch |e| {
+        try dbError(e, err, "cannot look up the schema", diag);
+        return false;
+    };
+    if (rows.len == 0) {
+        try err.print("ffmig: schema '{s}' (the [database] schema) does not exist; create it first\n", .{name});
+        return false;
+    }
+    conn.db.exec(use.written(), &diag) catch |e| {
+        try dbError(e, err, "cannot switch to the schema", diag);
+        return false;
+    };
+    return true;
+}
+
+fn oomFalse(err: *Writer) Writer.Error!bool {
+    try outOfMemory(err);
+    return false;
 }
 
 /// Sets the configured timeouts for the rest of the session. Reports

@@ -38,7 +38,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
     var project = try migrations.Project.load(env, arena, err) orelse return 1;
     defer project.close(env.io);
-    const conn = try migrations.connect(env, arena, project.url, err) orelse return 1;
+    const conn = try project.connect(env, arena, err) orelse return 1;
     defer conn.db.close();
     return status(env.io, arena, project, conn, out, err);
 }

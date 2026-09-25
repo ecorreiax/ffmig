@@ -1023,3 +1023,28 @@ test "multi-column, partial and concurrent indexes, time zones and new defaults"
     try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260101000000_create_accounts.mig\n", "");
     try f.expectColumns("accounts", "");
 }
+
+test "[database] schema holds the tables" {
+    var f: Fixture = try .init("schema_config", &.{ create_users, add_role });
+    defer f.deinit();
+    try f.tmp.dir.writeFile(testing.io, .{
+        .sub_path = config.file_name,
+        .data = "[migration]\npath = \"db\"\n\n[database]\nurl = \"${DATABASE_URL}\"\nschema = \"billing\"\n",
+    });
+
+    try f.expectRun(&.{"status"}, 1, "", "ffmig: schema 'billing' (the [database] schema) does not exist; create it first\n");
+    try exec(f.conn, "CREATE SCHEMA billing");
+    try f.expectRun(&.{ "migrate", "--to", "20260101000000" }, 0, "Migrated db/20260101000000_create_users.mig\n", "");
+    try f.expectQuery(
+        "SELECT table_schema || '.' || table_name FROM information_schema.tables WHERE table_schema IN ('public', 'billing') ORDER BY 1",
+        "billing.schema_migrations,billing.users",
+    );
+    try f.expectRun(&.{"migrate"}, 0, "Migrated db/20260102000000_add_role.mig\n", "");
+    try f.expectQuery("SELECT version FROM billing.schema_migrations ORDER BY version", "20260101000000,20260102000000");
+    try f.expectRun(&.{ "rollback", "--step", "2" }, 0,
+        \\Rolled back db/20260102000000_add_role.mig
+        \\Rolled back db/20260101000000_create_users.mig
+        \\
+    , "");
+    try f.expectQuery("SELECT table_name FROM information_schema.tables WHERE table_schema = 'billing'", "schema_migrations");
+}

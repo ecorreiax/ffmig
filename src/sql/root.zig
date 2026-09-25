@@ -206,6 +206,23 @@ pub fn writeTimeout(dialect: Dialect, t: Timeout, w: *Writer) Writer.Error!void 
     }
 }
 
+/// A statement about the schema that `[database] schema` in `ffmig.toml`
+/// names, which holds the project's tables.
+pub const Schema = union(enum) {
+    /// Selects one row if the schema exists, none otherwise.
+    exists: []const u8,
+    /// Makes unqualified names find tables in the schema, and create them
+    /// there, for the rest of the session.
+    use: []const u8,
+};
+
+/// Writes one schema statement, without a trailing `;`.
+pub fn writeSchema(dialect: Dialect, s: Schema, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try postgres.schema(w, s),
+    }
+}
+
 /// A statement that acts on a whole database, run by `create`, `drop`,
 /// `protect` and `unprotect` from the maintenance database.
 pub const Database = union(enum) {

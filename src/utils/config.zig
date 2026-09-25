@@ -10,6 +10,7 @@
 //!
 //! [database]
 //! url = "${DATABASE_URL}"
+//! schema = "billing"       # optional; unset uses the server's search_path
 //! ```
 
 const std = @import("std");
@@ -23,11 +24,15 @@ pub const Config = struct {
     /// Migrations directory, relative to the config file.
     path: []const u8,
     url: ?[]const u8,
+    /// The PostgreSQL schema that holds the tables, `schema_migrations`
+    /// included. Null, or empty in the file, for the server's search path.
+    schema: ?[]const u8 = null,
     timeouts: Timeouts = .{},
 
     pub fn deinit(c: Config, gpa: Allocator) void {
         gpa.free(c.path);
         if (c.url) |u| gpa.free(u);
+        if (c.schema) |x| gpa.free(x);
     }
 };
 
@@ -62,6 +67,8 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
     errdefer if (path) |p| gpa.free(p);
     var url: ?[]const u8 = null;
     errdefer if (url) |u| gpa.free(u);
+    var schema: ?[]const u8 = null;
+    errdefer if (schema) |x| gpa.free(x);
     var timeouts: Timeouts = .{};
 
     var section: []const u8 = "";
@@ -97,6 +104,8 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
             &path
         else if (eql(section, "database") and eql(key, "url"))
             &url
+        else if (eql(section, "database") and eql(key, "schema"))
+            &schema
         else
             continue;
 
@@ -105,9 +114,14 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
         slot.* = value;
     }
 
+    if (schema) |x| if (x.len == 0) {
+        gpa.free(x);
+        schema = null;
+    };
     return .{
         .path = path orelse try gpa.dupe(u8, default_path),
         .url = url,
+        .schema = schema,
         .timeouts = timeouts,
     };
 }
