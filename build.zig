@@ -24,13 +24,13 @@ pub fn build(b: *std.Build) void {
             mod.linkSystemLibrary("pq", .{ .use_pkg_config = .no, .preferred_link_mode = .dynamic });
         } else {
             mod.addObjectFile(.{ .cwd_relative = path });
-            // libpq calls into libc, which must then start up with the
-            // program; `linkSystemLibrary` implies this.
-            mod.link_libc = true;
         }
     } else {
         mod.linkSystemLibrary("pq", .{});
     }
+    // libpq calls into libc, which must then start up with the program.
+    // Without this, a Linux binary crashes in its first libpq call.
+    mod.link_libc = true;
     // `ffmig --version` prints the version from `build.zig.zon`.
     const options = b.addOptions();
     options.addOption([]const u8, "version", manifest.version);
