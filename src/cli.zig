@@ -22,11 +22,11 @@ pub const usage =
     \\      init            Create ffmig.toml and the empty migrations directory
     \\      create          Create the database named by the database url
     \\      drop            Drop that database and schema_migrations
-    \\      protect         Prevents the database from being dropped
+    \\      protect         Prevent the database from being dropped
     \\      unprotect       Remove the drop protection
     \\      new             Create a migration file
-    \\      check           Check the migrations files
-    \\      sql             Print the SQL translantion for a migration
+    \\      check           Check the migration files
+    \\      sql             Print the SQL translation for a migration
     \\      migrate         Apply every pending migration
     \\      rollback        Undo the last applied migration
     \\      redo            Undo the last applied migration and apply it again
