@@ -7,6 +7,8 @@ migration M {
       bigint :b, default: 9223372036854775807
       float :f, default: 1
       decimal :d, default: 0
+      decimal :d2, default: -0.10
+      float :f2, default: 0.5
       boolean :active, default: false
       date :day, default: "2026-01-01"
       datetime :at, default: "2026-01-01 12:00:00"

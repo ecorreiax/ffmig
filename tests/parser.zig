@@ -16,10 +16,11 @@ const worked_example =
     \\      string :email, null: false, limit: 255
     \\      integer :role, null: false, default: 0
     \\      boolean :active, default: true
-    \\      decimal :balance, precision: 10, scale: 2, default: 0
+    \\      decimal :balance, precision: 10, scale: 2, default: 0.50
+    \\      uuid :api_key, null: false, default: :uuid
     \\      json :settings, default: "{}"
-    \\      datetime :confirmed_at, default: :now
-    \\      timestamps
+    \\      datetime :confirmed_at, time_zone: true, default: :now
+    \\      timestamps time_zone: true
     \\    }
     \\    add_index :users_profile, :email, unique: true
     \\  }
@@ -57,7 +58,7 @@ test "the worked example parses" {
     try expectSymbol("uuid", create.options[0].value);
 
     const columns = create.block.?;
-    try testing.expectEqual(8, columns.len);
+    try testing.expectEqual(9, columns.len);
     const email = columns[1];
     try testing.expectEqualStrings("string", email.name);
     try expectSymbol("email", email.args[0]);
@@ -67,13 +68,16 @@ test "the worked example parses" {
     try testing.expectEqualStrings("limit", email.options[1].key);
     try testing.expectEqual(255, email.options[1].value.kind.integer);
     try testing.expectEqualStrings("string :email, null: false, limit: 255", email.span.slice(worked_example));
-    try testing.expectEqualStrings("{}", columns[5].options[0].value.kind.string);
-    try expectSymbol("now", columns[6].options[0].value);
+    try testing.expectEqualStrings("0.50", columns[4].options[2].value.kind.decimal);
+    try expectSymbol("uuid", columns[5].options[1].value);
+    try testing.expectEqualStrings("{}", columns[6].options[0].value.kind.string);
+    try expectSymbol("now", columns[7].options[1].value);
 
-    const timestamps = columns[7];
+    const timestamps = columns[8];
     try testing.expectEqualStrings("timestamps", timestamps.name);
     try testing.expectEqual(0, timestamps.args.len);
-    try testing.expectEqual(0, timestamps.options.len);
+    try testing.expectEqual(1, timestamps.options.len);
+    try testing.expectEqualStrings("time_zone", timestamps.options[0].key);
     try testing.expectEqual(null, timestamps.block);
 
     const index = change.calls[1];
@@ -82,7 +86,7 @@ test "the worked example parses" {
     try testing.expectEqual(true, index.options[0].value.kind.boolean);
     try testing.expectEqual(null, index.block);
     try testing.expect(std.mem.startsWith(u8, create.span.slice(worked_example), "create_table"));
-    try testing.expect(std.mem.endsWith(u8, create.span.slice(worked_example), "timestamps\n    }"));
+    try testing.expect(std.mem.endsWith(u8, create.span.slice(worked_example), "timestamps time_zone: true\n    }"));
 }
 
 test "empty blocks and any sequence of sections" {
@@ -237,7 +241,14 @@ test "syntax errors" {
         .{ "migration M { change { add_column :t, default: x: 1 } }", "expected a value after 'default:', found 'x:'", "x:" },
         .{ "migration M { change { add_index :users, :email,\n add_index :a, :b } }", "expected an argument after ',', found 'add_index'", "add_index :a" },
         .{ "migration M { change { add_index :users :email } }", "expected ',' or a new line, found ':email'", ":email" },
-        .{ "migration M { change { add_index :t, [:a, :b] } }", "'[' is reserved for multi-column indexes", "[" },
+        .{ "migration M { change { add_index :t, [] } }", "expected a value after '[', found ']'", "] }" },
+        .{ "migration M { change { add_index :t, [:a,] } }", "expected a value after ',', found ']'", "] }" },
+        .{ "migration M { change { add_index :t, [:a :b] } }", "expected ',' or ']', found ':b'", ":b" },
+        .{ "migration M { change { add_index :t, [:a } }", "expected ',' or ']', found '}'", "} }" },
+        .{ "migration M { change { add_index :t, ] } }", "expected an argument after ',', found ']'", "]" },
+        .{ "migration M { change { f 1.x } }", "invalid number '1.'", "1." },
+        .{ "migration M { change { f 1.5.2 } }", "invalid number '1.5.2'", "1.5" },
+        .{ "migration M { change { f 1.5x } }", "invalid number '1.5x'", "1.5" },
         .{ "migration M { change { , } }", "expected a statement or '}', found ','", ", }" },
         .{ "migration M { change { f 9223372036854775808 } }", "integer '9223372036854775808' does not fit in 64 bits", "92" },
         .{ "migration M { change { f -9223372036854775809 } }", "integer '-9223372036854775809' does not fit in 64 bits", "-92" },
@@ -281,6 +292,24 @@ test "deep nesting is an error, not a stack overflow" {
     var diag: Diagnostic = .{};
     try testing.expectError(error.InvalidSyntax, parse(arena.allocator(), source, &diag));
     try testing.expectEqualStrings("blocks are nested too deeply", diag.message);
+    const lists = "migration M { change { a " ++ "[" ** 100;
+    try testing.expectError(error.InvalidSyntax, parse(arena.allocator(), lists, &diag));
+    try testing.expectEqualStrings("lists are nested too deeply", diag.message);
+}
+
+test "lists and decimals" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var diag: Diagnostic = .{};
+    const source = "migration M { change { f [:a,\n :b], [[1]], k: -0.50 } }";
+    const call = (try parse(arena.allocator(), source, &diag)).sections[0].calls[0];
+    const list = call.args[0].kind.list;
+    try testing.expectEqual(2, list.len);
+    try expectSymbol("a", list[0]);
+    try expectSymbol("b", list[1]);
+    try testing.expectEqualStrings("[:a,\n :b]", call.args[0].span.slice(source));
+    try testing.expectEqual(1, call.args[1].kind.list[0].kind.list[0].kind.integer);
+    try testing.expectEqualStrings("-0.50", call.options[0].value.kind.decimal);
 }
 
 test "out of memory is reported, not turned into a syntax error" {

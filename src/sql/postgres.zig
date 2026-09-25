@@ -56,7 +56,7 @@ pub fn columnType(w: *Writer, c: ast.Column) Writer.Error!void {
         .float => try w.writeAll("double precision"),
         .boolean => try w.writeAll("boolean"),
         .date => try w.writeAll("date"),
-        .datetime => try w.writeAll("timestamp(6)"),
+        .datetime => try w.writeAll(if (c.time_zone) "timestamptz(6)" else "timestamp(6)"),
         .time => try w.writeAll("time"),
         .binary => try w.writeAll("bytea"),
         .uuid => try w.writeAll("uuid"),
@@ -70,6 +70,7 @@ pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
     switch (l) {
         .string => |s| try w.print("{f}", .{StringLiteral{ .parts = &.{s} }}),
         .integer => |i| try w.print("{d}", .{i}),
+        .decimal => |d| try w.writeAll(d),
         .boolean => |b| try w.writeAll(if (b) "true" else "false"),
         .nil => try w.writeAll("NULL"),
     }
@@ -77,11 +78,20 @@ pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
 
 /// `CURRENT_TIMESTAMP` fits `date` and `time` columns too, through
 /// PostgreSQL's assignment casts, so the column's type (null when the
-/// operation does not know it) does not matter.
+/// operation does not know it) does not matter. `gen_random_uuid()` is
+/// built in since PostgreSQL 13.
 pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ?ast.ColumnType) Writer.Error!void {
     try w.writeAll(switch (n) {
         .now => "CURRENT_TIMESTAMP",
+        .uuid => "gen_random_uuid()",
     });
+}
+
+/// The keyword after `CREATE INDEX` and `DROP INDEX`.
+pub fn indexAlgorithm(a: ast.IndexAlgorithm) []const u8 {
+    return switch (a) {
+        .concurrently => "CONCURRENTLY",
+    };
 }
 
 /// Follows `ALTER TABLE <from> RENAME TO <to>` with a `DO` block that

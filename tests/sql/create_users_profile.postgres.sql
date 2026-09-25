@@ -5,11 +5,12 @@ CREATE TABLE "users_profile" (
   "email" varchar(255) NOT NULL,
   "role" integer DEFAULT 0 NOT NULL,
   "active" boolean DEFAULT true,
-  "balance" numeric(10, 2) DEFAULT 0,
+  "balance" numeric(10, 2) DEFAULT 0.50,
+  "api_key" uuid DEFAULT gen_random_uuid() NOT NULL,
   "settings" jsonb DEFAULT '{}',
-  "confirmed_at" timestamp(6) DEFAULT CURRENT_TIMESTAMP,
-  "created_at" timestamp(6) NOT NULL,
-  "updated_at" timestamp(6) NOT NULL
+  "confirmed_at" timestamptz(6) DEFAULT CURRENT_TIMESTAMP,
+  "created_at" timestamptz(6) NOT NULL,
+  "updated_at" timestamptz(6) NOT NULL
 );
 CREATE UNIQUE INDEX "index_users_profile_on_email" ON "users_profile" ("email");
 -- down

@@ -1,0 +1,6 @@
+migration M, transaction: false {
+  change {
+    add_index :posts, :slug, unique: true, algorithm: :concurrently
+    remove_index :posts, :title, algorithm: :concurrently
+  }
+}

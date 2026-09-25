@@ -1,0 +1,1 @@
+3:23: a concurrent index needs 'transaction: false' on the migration

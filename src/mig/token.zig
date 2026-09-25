@@ -20,6 +20,8 @@ pub const Tag = enum {
     /// `:users` (span excludes the colon)
     symbol,
     integer,
+    /// `0.5`, `-12.25`: digits on both sides of the `.`.
+    decimal,
     /// Span includes the quotes, `"""` for a multi-line string;
     /// unescaping happens in the parser.
     string,

@@ -1,0 +1,10 @@
+migration M {
+  change {
+    create_table :t {
+      float :f, default: 0.5
+      decimal :d, precision: 5, scale: 2, default: -12.250
+      uuid :token, null: false, default: :uuid
+    }
+    change_column_default :t, :f, from: 0.5, to: 1.25
+  }
+}

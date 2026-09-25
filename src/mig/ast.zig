@@ -50,10 +50,37 @@ pub const AddColumn = struct { table: []const u8, column: Column };
 /// `column` is null without a type, which makes the removal irreversible.
 pub const RemoveColumn = struct { table: []const u8, name: []const u8, column: ?Column };
 pub const RenameColumn = struct { table: []const u8, from: []const u8, to: []const u8 };
-/// `name` is null for the default name `index_<table>_on_<column>`.
-pub const AddIndex = struct { table: []const u8, column: []const u8, unique: bool = false, name: ?[]const u8 = null };
-/// At least one of `column` and `name` is set.
-pub const RemoveIndex = struct { table: []const u8, column: ?[]const u8, unique: bool = false, name: ?[]const u8 };
+/// `name` is null for the default name `index_<table>_on_<c1>_and_<c2>`.
+pub const AddIndex = struct {
+    table: []const u8,
+    /// One or more, in index order.
+    columns: []const []const u8,
+    unique: bool = false,
+    name: ?[]const u8 = null,
+    /// A partial index's condition, SQL carried as written.
+    where: ?[]const u8 = null,
+    algorithm: ?IndexAlgorithm = null,
+};
+/// At least one of `columns` and `name` is set. `unique` and `where`
+/// describe the index so that the undo can recreate it.
+pub const RemoveIndex = struct {
+    table: []const u8,
+    columns: ?[]const []const u8,
+    unique: bool = false,
+    name: ?[]const u8,
+    where: ?[]const u8 = null,
+    algorithm: ?IndexAlgorithm = null,
+};
+
+/// How an index is built or dropped. `concurrently` does not block
+/// writes to the table, and needs a migration without a transaction.
+pub const IndexAlgorithm = enum { concurrently };
+
+/// The longest name, in bytes, of a table, column, index or foreign key:
+/// PostgreSQL's limit, which is the smallest among the databases the
+/// language targets. PostgreSQL would cut a longer name short, and a
+/// default name computed later would no longer find it.
+pub const max_name_length = 63;
 
 /// Also renames the indexes and foreign keys named after `from` by
 /// default; see "rename_table" in `MIG.md`.
@@ -91,12 +118,14 @@ pub const Dialect = enum { postgres };
 
 pub const ColumnType = enum { string, text, integer, bigint, float, decimal, boolean, date, datetime, time, binary, uuid, json };
 
-/// A column type with its size options, which `change_column` changes.
+/// A column type with its size options and time zone, which
+/// `change_column` changes.
 pub const SizedType = struct {
     type: ColumnType,
     limit: ?u32 = null,
     precision: ?u8 = null,
     scale: ?u8 = null,
+    time_zone: bool = false,
 };
 
 pub const Column = struct {
@@ -110,6 +139,8 @@ pub const Column = struct {
     /// `decimal` only; `scale` requires `precision`.
     precision: ?u8 = null,
     scale: ?u8 = null,
+    /// `datetime` only: a point in time rather than a wall-clock reading.
+    time_zone: bool = false,
     /// Set on the `<name>_id` column a `references` statement makes.
     reference: ?Reference = null,
     span: Span,
@@ -143,15 +174,25 @@ pub const Default = union(enum) {
     named: NamedDefault,
 };
 
-pub const Literal = union(enum) { string: []const u8, integer: i64, boolean: bool, nil };
+pub const Literal = union(enum) {
+    string: []const u8,
+    integer: i64,
+    /// As written, e.g. `0.50`, so it is never rounded.
+    decimal: []const u8,
+    boolean: bool,
+    nil,
+};
 
 pub const NamedDefault = enum {
     now,
+    /// A new random UUID for each row.
+    uuid,
 
     /// Column types the named default may be used on.
     pub fn allows(n: NamedDefault, t: ColumnType) bool {
         return switch (n) {
             .now => t == .datetime or t == .date or t == .time,
+            .uuid => t == .uuid,
         };
     }
 };

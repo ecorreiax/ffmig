@@ -1,0 +1,11 @@
+# `time_zone: true` makes a datetime a point in time (PostgreSQL's
+# timestamptz). `timestamps` takes it too, for both of its columns.
+migration CreateAuditEvents {
+  change {
+    create_table :audit_events {
+      string :action, null: false
+      datetime :happened_at, null: false, time_zone: true, default: :now
+      timestamps time_zone: true
+    }
+  }
+}

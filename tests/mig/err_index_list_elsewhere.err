@@ -1,0 +1,1 @@
+3:20: add_column expects :column to be a symbol, found a list

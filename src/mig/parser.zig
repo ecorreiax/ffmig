@@ -18,7 +18,8 @@ pub const Diagnostic = struct {
     message: []const u8 = "",
 };
 
-/// Blocks deeper than this are rejected instead of risking a stack overflow.
+/// Blocks and lists deeper than this are rejected instead of risking a
+/// stack overflow.
 /// The language only uses two levels (section, table block).
 const max_depth = 32;
 
@@ -173,12 +174,14 @@ const Parser = struct {
     /// Parses the current token, which must satisfy `isValue`.
     fn parseValue(p: *Parser) Error!syntax.Value {
         const tok = p.current;
+        if (tok.tag == .l_bracket) return p.parseList();
         const text = tok.span.slice(p.source);
         const kind: syntax.Value.Kind = switch (tok.tag) {
             .symbol => .{ .symbol = text },
             .string => .{ .string = try p.stringValue(tok.span) },
             .integer => .{ .integer = std.fmt.parseInt(i64, text, 10) catch
                 return p.fail(tok.span, "integer '{s}' does not fit in 64 bits", .{text}) },
+            .decimal => .{ .decimal = text },
             .kw_true => .{ .boolean = true },
             .kw_false => .{ .boolean = false },
             .kw_nil => .nil,
@@ -186,6 +189,34 @@ const Parser = struct {
         };
         try p.advance();
         return .{ .kind = kind, .span = fullSpan(tok) };
+    }
+
+    /// `"[" value { "," value } "]"`, at the `[`.
+    fn parseList(p: *Parser) Error!syntax.Value {
+        const open = p.current.span;
+        if (p.depth == max_depth) return p.fail(open, "lists are nested too deeply", .{});
+        p.depth += 1;
+        defer p.depth -= 1;
+        try p.advance();
+
+        var values: std.ArrayList(syntax.Value) = .empty;
+        while (true) {
+            if (!isValue(p.current.tag)) {
+                if (values.items.len == 0) return p.expected("a value after '['", .{});
+                return p.expected("a value after ','", .{});
+            }
+            try values.append(p.arena, try p.parseValue());
+            switch (p.current.tag) {
+                .comma => try p.advance(),
+                .r_bracket => break,
+                else => return p.expected("',' or ']'", .{}),
+            }
+        }
+        try p.advance(); // ]
+        return .{
+            .kind = .{ .list = try values.toOwnedSlice(p.arena) },
+            .span = .{ .start = open.start, .end = p.prev_end },
+        };
     }
 
     /// The value of a valid string token. A one-line string without
@@ -252,9 +283,6 @@ const Parser = struct {
 
     /// Reports `expected <what>, found <current token>` at the current token.
     fn expected(p: *Parser, comptime what: []const u8, args: anytype) Error {
-        if (p.current.tag == .l_bracket or p.current.tag == .r_bracket) {
-            return p.fail(p.current.span, "'{s}' is reserved for multi-column indexes", .{p.current.span.slice(p.source)});
-        }
         return p.fail(fullSpan(p.current), "expected " ++ what ++ ", found {f}", args ++ .{Found{ .source = p.source, .tok = p.current }});
     }
 
@@ -340,7 +368,7 @@ fn unescape(out: *std.ArrayList(u8), escaped: []const u8) void {
 
 fn isValue(tag: Tag) bool {
     return switch (tag) {
-        .symbol, .string, .integer, .kw_true, .kw_false, .kw_nil => true,
+        .symbol, .string, .integer, .decimal, .kw_true, .kw_false, .kw_nil, .l_bracket => true,
         else => false,
     };
 }

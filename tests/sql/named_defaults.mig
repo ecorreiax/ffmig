@@ -4,6 +4,7 @@ migration M {
       datetime :published_at, default: :now
       date :day, default: :now
       time :tm, default: :now
+      uuid :token, default: :uuid
     }
   }
 }

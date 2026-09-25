@@ -1,3 +1,3 @@
 migration AddSlugIndex transaction=false
   change
-    add_index posts slug unique
+    add_index posts slug unique algorithm=concurrently

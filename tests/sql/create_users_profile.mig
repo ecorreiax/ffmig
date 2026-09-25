@@ -6,10 +6,11 @@ migration CreateUsersProfile {
       string :email, null: false, limit: 255
       integer :role, null: false, default: 0
       boolean :active, default: true
-      decimal :balance, precision: 10, scale: 2, default: 0
+      decimal :balance, precision: 10, scale: 2, default: 0.50
+      uuid :api_key, null: false, default: :uuid
       json :settings, default: "{}"
-      datetime :confirmed_at, default: :now
-      timestamps
+      datetime :confirmed_at, time_zone: true, default: :now
+      timestamps time_zone: true
     }
     add_index :users_profile, :email, unique: true
   }

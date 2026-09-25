@@ -1,0 +1,7 @@
+migration M {
+  change {
+    create_table :subscription_invoice_line_items {
+      references :subscription_invoice_adjustment
+    }
+  }
+}

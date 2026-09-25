@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_index :subscription_events, [:subscription_id, :customer_id, :created_at]
+  }
+}

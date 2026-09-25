@@ -40,8 +40,9 @@ migration CreatePosts {
 - Every operation in `change` must be reversible, which means carrying what its undo needs: `drop_table` its `id:` and column block, `remove_column` its type and options, `change_column` and `change_column_default` their `from:`, `remove_index` its column (and `unique: true` if the index was). The table in the Reversibility section of `MIG.md` lists them all. `check` warns about an irreversible operation in `change`.
 - `execute "sql"` runs raw SQL, with `"""` for several lines, and is allowed only in `up` / `down`. `dialect: :postgres` marks it as PostgreSQL only.
 - Table, column and type names are symbols: `add_column :users, :role, :integer`. Inside a table block the type is a bare word: `string :email`. Positional arguments come before labeled ones, there is no trailing comma, and a line break ends a statement unless a comma continues it.
+- `add_index :t, [:a, :b]` indexes several columns; `where: "SQL"` makes it partial, and `algorithm: :concurrently` needs `transaction: false`. Names, default ones included, are at most 63 bytes.
 - `create_table` gives a `bigint` primary key `id`, or `id: :uuid`, or none with `id: false`. `references :user` (the name without `_id`) adds the column `user_id`, a foreign key to `users` and an index; its `type:` must match the other table's `id:`.
-- `transaction: false` after the migration name (`migration M, transaction: false {`) is for statements PostgreSQL refuses in a transaction, such as `CREATE INDEX CONCURRENTLY`. A failure then leaves the earlier statements applied.
+- `transaction: false` after the migration name (`migration M, transaction: false {`) is for statements PostgreSQL refuses in a transaction, such as a concurrent index or `VACUUM`. A failure then leaves the earlier statements applied.
 - `ffmig check --down <file>` prints the parsed migration with its derived down steps, and `ffmig sql [--down] <file>` prints the PostgreSQL.
 
 ## Development

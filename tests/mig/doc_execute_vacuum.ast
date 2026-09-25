@@ -1,0 +1,4 @@
+migration VacuumPosts transaction=false
+  up
+    execute "VACUUM ANALYZE posts"
+  down

@@ -970,3 +970,56 @@ test "--to both ways, dry runs, redo and --fake" {
     , "");
     try f.expectColumns("users", "id,email,role");
 }
+
+test "multi-column, partial and concurrent indexes, time zones and new defaults" {
+    const create_accounts = [2][]const u8{
+        "20260101000000_create_accounts.mig",
+        \\migration CreateAccounts {
+        \\  change {
+        \\    create_table :accounts {
+        \\      bigint :org_id
+        \\      string :email
+        \\      datetime :deleted_at, time_zone: true
+        \\      uuid :token, null: false, default: :uuid
+        \\      decimal :balance, precision: 10, scale: 2, default: 0.50
+        \\    }
+        \\    add_index :accounts, [:org_id, :email], unique: true, where: "deleted_at IS NULL"
+        \\  }
+        \\}
+        \\
+    };
+    const index_token = [2][]const u8{
+        "20260102000000_index_token.mig",
+        \\migration IndexToken, transaction: false {
+        \\  change {
+        \\    add_index :accounts, :token, unique: true, algorithm: :concurrently
+        \\  }
+        \\}
+        \\
+    };
+    var f: Fixture = try .init("indexes_and_types", &.{ create_accounts, index_token });
+    defer f.deinit();
+
+    try f.expectRun(&.{"migrate"}, 0,
+        \\Migrated db/20260101000000_create_accounts.mig
+        \\Migrated db/20260102000000_index_token.mig
+        \\
+    , "");
+    const indexes = "SELECT indexdef FROM pg_indexes WHERE tablename = 'accounts' AND indexname LIKE 'index_%' ORDER BY indexname";
+    try f.expectQuery(indexes, "CREATE UNIQUE INDEX index_accounts_on_org_id_and_email ON public.accounts USING btree (org_id, email) WHERE (deleted_at IS NULL)," ++
+        "CREATE UNIQUE INDEX index_accounts_on_token ON public.accounts USING btree (token)");
+    try f.expectQuery(
+        "SELECT data_type FROM information_schema.columns WHERE table_name = 'accounts' AND column_name = 'deleted_at'",
+        "timestamp with time zone",
+    );
+    try exec(f.conn, "INSERT INTO accounts (org_id, email) VALUES (1, 'a'), (1, 'b')");
+    try f.expectQuery("SELECT count(DISTINCT token)::text, min(balance)::text FROM accounts", "2 0.50");
+    // The partial index leaves deleted rows out.
+    try exec(f.conn, "UPDATE accounts SET deleted_at = now()");
+    try exec(f.conn, "INSERT INTO accounts (org_id, email) VALUES (1, 'a')");
+
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260102000000_index_token.mig\n", "");
+    try f.expectQuery(indexes, "CREATE UNIQUE INDEX index_accounts_on_org_id_and_email ON public.accounts USING btree (org_id, email) WHERE (deleted_at IS NULL)");
+    try f.expectRun(&.{"rollback"}, 0, "Rolled back db/20260101000000_create_accounts.mig\n", "");
+    try f.expectColumns("accounts", "");
+}

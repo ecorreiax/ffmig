@@ -152,7 +152,7 @@ version         # Print the version
 - `--step <n>`: Act on the last `n` migrations instead of one
 - `--lock-wait <s>`: Wait up to `s` seconds for another run to finish (default: 60; 0: do not wait)
 
-A migration that needs statements which cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`, declares `transaction: false`; its statements then run one at a time. See [MIG.md](MIG.md).
+A migration that needs statements which cannot run in a transaction, such as `add_index ..., algorithm: :concurrently`, declares `transaction: false`; its statements then run one at a time. See [MIG.md](MIG.md).
 
 ## Configuration
 

@@ -72,8 +72,8 @@ fn operation(w: *Writer, kind: ast.Operation.Kind) Writer.Error!void {
             if (o.column) |c| try column(w, c);
         },
         .rename_column => |o| try w.print(" {s} {s} {s}\n", .{ o.table, o.from, o.to }),
-        .add_index => |o| try index(w, o.table, o.column, o.unique, o.name),
-        .remove_index => |o| try index(w, o.table, o.column, o.unique, o.name),
+        .add_index => |o| try index(w, o.table, o.columns, o.unique, o.name, o.where, o.algorithm),
+        .remove_index => |o| try index(w, o.table, o.columns, o.unique, o.name, o.where, o.algorithm),
         .rename_table => |o| try w.print(" {s} {s}\n", .{ o.from, o.to }),
         .change_column => |o| {
             try w.print(" {s} {s} ", .{ o.table, o.column });
@@ -113,20 +113,39 @@ fn operation(w: *Writer, kind: ast.Operation.Kind) Writer.Error!void {
     }
 }
 
-fn index(w: *Writer, table: []const u8, col: ?[]const u8, unique: bool, name: ?[]const u8) Writer.Error!void {
+/// One column bare, several as `[a, b]`.
+fn index(
+    w: *Writer,
+    table: []const u8,
+    cols: ?[]const []const u8,
+    unique: bool,
+    name: ?[]const u8,
+    where: ?[]const u8,
+    algorithm: ?ast.IndexAlgorithm,
+) Writer.Error!void {
     try w.print(" {s}", .{table});
-    if (col) |c| try w.print(" {s}", .{c});
+    if (cols) |cs| {
+        if (cs.len == 1) {
+            try w.print(" {s}", .{cs[0]});
+        } else for (cs, 0..) |c, i| {
+            try w.print("{s}{s}", .{ if (i == 0) " [" else ", ", c });
+        }
+        if (cs.len > 1) try w.writeByte(']');
+    }
     if (unique) try w.writeAll(" unique");
     if (name) |n| try w.print(" name=\"{f}\"", .{std.zig.fmtString(n)});
+    if (where) |c| try w.print(" where=\"{f}\"", .{std.zig.fmtString(c)});
+    if (algorithm) |a| try w.print(" algorithm={t}", .{a});
     try w.writeByte('\n');
 }
 
-/// `string limit=255`; `prefix` goes before each size option's name.
+/// `string limit=255`; `prefix` goes before each option's name.
 fn sizedType(w: *Writer, t: ast.SizedType, comptime prefix: []const u8) Writer.Error!void {
     try w.print("{t}", .{t.type});
     if (t.limit) |n| try w.print(" " ++ prefix ++ "limit={d}", .{n});
     if (t.precision) |n| try w.print(" " ++ prefix ++ "precision={d}", .{n});
     if (t.scale) |n| try w.print(" " ++ prefix ++ "scale={d}", .{n});
+    if (t.time_zone) try w.writeAll(" " ++ prefix ++ "time_zone");
 }
 
 fn foreignKey(
@@ -154,6 +173,7 @@ fn column(w: *Writer, c: ast.Column) Writer.Error!void {
     if (c.limit) |n| try w.print(" limit={d}", .{n});
     if (c.precision) |n| try w.print(" precision={d}", .{n});
     if (c.scale) |n| try w.print(" scale={d}", .{n});
+    if (c.time_zone) try w.writeAll(" time_zone");
     if (c.default) |d| {
         try w.writeAll(" default=");
         try defaultValue(w, d);
@@ -179,6 +199,7 @@ fn defaultValue(w: *Writer, d: ast.Default) Writer.Error!void {
         .literal => |l| switch (l) {
             .string => |s| try w.print("\"{f}\"", .{std.zig.fmtString(s)}),
             .integer => |i| try w.print("{d}", .{i}),
+            .decimal => |text| try w.writeAll(text),
             .boolean => |b| try w.print("{}", .{b}),
             .nil => try w.writeAll("nil"),
         },

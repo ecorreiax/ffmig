@@ -1,0 +1,8 @@
+migration M
+  change
+    create_table events id=bigint
+      column at datetime null time_zone default=:now
+      column local_at datetime null
+      column created_at datetime not_null time_zone
+      column updated_at datetime not_null time_zone
+    change_column events local_at datetime time_zone from=datetime
