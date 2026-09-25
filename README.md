@@ -160,12 +160,22 @@ FFMig reads `ffmig.toml` from the current directory, or the file that `--config`
 
 ```toml
 [migration]
-path = "migrations"           # The migrations directory
-# lock_timeout = "5s"         # Fail a statement that waits longer than this for a lock
-# statement_timeout = "30s"   # Fail a statement that runs longer than this
+path = "migrations"
 
 [database]
-url = "${DATABASE_URL}"       # Database string connection
+url = "${DATABASE_URL}"
+```
+
+- `path` is the migrations directory, relative to the config file.
+- `url` is the database URL. `${VAR}` is replaced by the environment variable `VAR`. `--url` or a non-empty `FFMIG_DATABASE_URL` takes precedence over it.
+
+`[migration]` also takes two optional timeouts:
+
+```toml
+[migration]
+path = "migrations"
+lock_timeout = "5s"         # Fail a statement that waits longer than this for a lock
+statement_timeout = "30s"   # Fail a statement that runs longer than this
 ```
 
 The timeouts take a whole number followed by `ms`, `s`, `min` or `h`, such as `"500ms"`, `"5s"` or `"2min"`, or `"0"` for no limit. When one is unset, the server's own setting applies. They apply to `migrate`, `rollback` and `redo`.
