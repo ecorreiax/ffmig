@@ -1,0 +1,12 @@
+# references inside create_table: adds a `user_id` column, a foreign key to
+# `users(id)` and an index on `user_id`.
+migration CreatePosts {
+  change {
+    create_table :posts {
+      references :user, null: false, on_delete: :cascade
+      string :title, null: false
+      text :body
+      timestamps
+    }
+  }
+}

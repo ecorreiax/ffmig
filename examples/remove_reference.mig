@@ -1,0 +1,7 @@
+# remove_reference: drops the column, which drops its foreign key and index
+# with it. The rollback adds the reference back as written.
+migration RemoveEditorFromPosts {
+  change {
+    remove_reference :posts, :editor, to: :users, on_delete: :nullify
+  }
+}

@@ -1,0 +1,7 @@
+# change_column with `from:`: changes the column's type, and `from:` names the
+# old type so that the rollback can restore it.
+migration WidenPostsViews {
+  change {
+    change_column :posts, :views, :bigint, from: :integer
+  }
+}

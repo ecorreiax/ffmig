@@ -1,0 +1,7 @@
+# change_column_null with `default:`: fills the existing nulls with the value,
+# then forbids nulls in the column.
+migration RequireUsersRole {
+  change {
+    change_column_null :users, :role, false, default: 0
+  }
+}

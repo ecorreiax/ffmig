@@ -1,0 +1,11 @@
+# drop_table with the table's columns: reversible, because the rollback can
+# recreate the table from the block.
+migration DropLegacySessions {
+  change {
+    drop_table :legacy_sessions {
+      string :token, null: false
+      datetime :expires_at
+      timestamps
+    }
+  }
+}

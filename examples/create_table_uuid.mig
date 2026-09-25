@@ -1,0 +1,11 @@
+# create_table with `id: :uuid`: the primary key is a UUID instead of a
+# bigint.
+migration CreateApiKeys {
+  change {
+    create_table :api_keys, id: :uuid {
+      string :label, null: false
+      datetime :expires_at
+      timestamps
+    }
+  }
+}

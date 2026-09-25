@@ -1,0 +1,6 @@
+# rename_column: renames a column, keeping its type, data and indexes.
+migration RenameUsersNameToFullName {
+  change {
+    rename_column :users, :name, :full_name
+  }
+}

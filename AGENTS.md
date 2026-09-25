@@ -45,4 +45,5 @@ Adding a dialect means a new `sql.Dialect` value (and the same in `ast.Dialect`,
   - `tests/mig/<case>.mig` pairs with `<case>.ast` (the expected `print` output) or `<case>.err` (the expected `line:col: message`). `doc_*` cases mirror examples in `MIG.md`, and `err_*` cases cover rejected input.
   - `tests/sql/<case>.mig` pairs with `<case>.<dialect>.sql`, which holds `-- up` and `-- down` sections. Every `.mig` is checked against every dialect in `sql.Dialect`.
   - When a golden file is missing, the test prints the actual output, which can be pasted in after checking it.
+- `examples/` holds one `.mig` per operation or feature. `tests/examples.zig` checks that each parses, is reversible, and writes SQL, so a language change that breaks an example fails `make test`.
 - `tests/integration/root.zig` runs commands through the CLI router against a real server, with a fresh database per test (the name passed to `Fixture.init` must be unique).

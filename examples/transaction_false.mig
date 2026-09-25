@@ -1,0 +1,10 @@
+# transaction: false: runs outside a transaction, which PostgreSQL's
+# CREATE INDEX CONCURRENTLY requires.
+migration AddPostsSlugIndexConcurrently, transaction: false {
+  up {
+    execute "CREATE INDEX CONCURRENTLY index_posts_on_slug ON posts (slug)", dialect: :postgres
+  }
+  down {
+    execute "DROP INDEX CONCURRENTLY index_posts_on_slug", dialect: :postgres
+  }
+}

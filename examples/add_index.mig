@@ -1,0 +1,6 @@
+# add_index with `unique: true`: named `index_users_on_email` by default.
+migration AddUniqueIndexToUsersEmail {
+  change {
+    add_index :users, :email, unique: true
+  }
+}

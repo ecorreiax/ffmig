@@ -1,0 +1,13 @@
+# create_table: a table with a bigint `id` primary key, columns of several
+# types, and `created_at` / `updated_at` from `timestamps`.
+migration CreateUsers {
+  change {
+    create_table :users {
+      string :email, null: false, limit: 255
+      string :name
+      integer :role, null: false, default: 0
+      boolean :active, default: true
+      timestamps
+    }
+  }
+}

@@ -1,0 +1,7 @@
+# remove_index with the column and `unique: true`: reversible, because the
+# rollback recreates the index as written.
+migration RemoveUniqueIndexFromUsersEmail {
+  change {
+    remove_index :users, :email, unique: true
+  }
+}

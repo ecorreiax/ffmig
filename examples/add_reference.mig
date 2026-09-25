@@ -1,0 +1,7 @@
+# add_reference: adds `author_id` to an existing table, with a foreign key to
+# `users(id)` (named by `to:`) and an index.
+migration AddAuthorToComments {
+  change {
+    add_reference :comments, :author, to: :users, null: false, on_delete: :cascade
+  }
+}

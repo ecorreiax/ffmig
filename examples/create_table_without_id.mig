@@ -1,0 +1,10 @@
+# create_table with `id: false`: a table with no primary key, such as a
+# join table.
+migration CreatePostsTags {
+  change {
+    create_table :posts_tags, id: false {
+      references :post, null: false, on_delete: :cascade
+      references :tag, null: false, on_delete: :cascade
+    }
+  }
+}

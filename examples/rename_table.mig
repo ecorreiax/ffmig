@@ -1,0 +1,7 @@
+# rename_table: also renames the indexes, foreign keys, primary key and
+# sequence named after the table.
+migration RenamePostsToArticles {
+  change {
+    rename_table :posts, :articles
+  }
+}

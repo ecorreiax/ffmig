@@ -23,6 +23,7 @@ test {
     _ = @import("mig.zig");
     _ = @import("sql.zig");
     _ = @import("sql_command.zig");
+    _ = @import("examples.zig");
     _ = @import("migrate.zig");
     _ = @import("database.zig");
 }

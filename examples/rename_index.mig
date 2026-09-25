@@ -1,0 +1,7 @@
+# rename_index: the index names are strings. The table is always given,
+# since some databases name indexes per table.
+migration RenameUsersEmailIndex {
+  change {
+    rename_index :users, "index_users_on_email", "users_email_key"
+  }
+}

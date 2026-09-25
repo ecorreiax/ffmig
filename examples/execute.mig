@@ -1,0 +1,13 @@
+# execute: raw SQL the language does not model, here a view. It is allowed
+# only in up and down, since ffmig cannot derive the undo of SQL.
+migration CreatePublishedPosts {
+  up {
+    execute """
+      CREATE VIEW published_posts AS
+      SELECT * FROM posts WHERE published_at IS NOT NULL
+      """
+  }
+  down {
+    execute "DROP VIEW published_posts"
+  }
+}

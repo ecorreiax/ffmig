@@ -1,0 +1,7 @@
+# change_column_default with `from:` and `to:`: sets a new default, and the
+# rollback sets the `from:` one back.
+migration DefaultPostsStatusToDraft {
+  change {
+    change_column_default :posts, :status, from: nil, to: "draft"
+  }
+}

@@ -1,0 +1,14 @@
+# up and down: both directions are written by hand and nothing is derived,
+# so `down` can undo an operation that is irreversible in `change`.
+migration DropAuditLog {
+  up {
+    drop_table :audit_log
+  }
+  down {
+    create_table :audit_log {
+      string :action, null: false
+      json :details
+      timestamps
+    }
+  }
+}

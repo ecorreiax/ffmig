@@ -1,0 +1,7 @@
+# remove_foreign_key with the table and `column:`: reversible, because the
+# rollback recreates the foreign key as written.
+migration RemovePostsAuthorForeignKey {
+  change {
+    remove_foreign_key :posts, :users, column: :author_id, on_delete: :cascade
+  }
+}

@@ -1,0 +1,7 @@
+# remove_column with the column's type and options: reversible, because the
+# rollback can add the column back as it was.
+migration RemoveNicknameFromUsers {
+  change {
+    remove_column :users, :nickname, :string, limit: 50
+  }
+}

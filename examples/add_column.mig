@@ -1,0 +1,7 @@
+# add_column: a new column on an existing table. It is nullable, like any
+# column without `null: false`.
+migration AddBioToUsers {
+  change {
+    add_column :users, :bio, :text
+  }
+}
