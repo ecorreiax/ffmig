@@ -1,4 +1,4 @@
-//! The `.mig` language front end. See `docs/mig.md` for the specification.
+//! The `.mig` language front end. See `MIG.md` for the specification.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

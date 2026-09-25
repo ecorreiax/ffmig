@@ -1,6 +1,6 @@
 //! Typed, validated IR of a migration, produced by lowering. It records
 //! meaning only (`ColumnType.json`, `IdKind.uuid`) and never SQL spellings;
-//! each dialect maps it to SQL. See `docs/mig.md`.
+//! each dialect maps it to SQL. See `MIG.md`.
 
 const Span = @import("token.zig").Span;
 
@@ -56,7 +56,7 @@ pub const AddIndex = struct { table: []const u8, column: []const u8, unique: boo
 pub const RemoveIndex = struct { table: []const u8, column: ?[]const u8, unique: bool = false, name: ?[]const u8 };
 
 /// Also renames the indexes and foreign keys named after `from` by
-/// default; see "rename_table" in `docs/mig.md`.
+/// default; see "rename_table" in `MIG.md`.
 pub const RenameTable = struct { from: []const u8, to: []const u8 };
 /// `from` is null without `from:`, which makes the change irreversible.
 pub const ChangeColumn = struct { table: []const u8, column: []const u8, to: SizedType, from: ?SizedType };

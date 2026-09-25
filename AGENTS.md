@@ -36,13 +36,13 @@ Adding a dialect means a new `sql.Dialect` value (and the same in `ast.Dialect`,
 
 ## The `.mig` language spec
 
-`docs/mig.md` is the specification. The lexer, parser and lowering implement what it says, and a disagreement between the doc and the code is a bug in one of them. Language changes go in both places.
+`MIG.md` is the specification. The lexer, parser and lowering implement what it says, and a disagreement between the doc and the code is a bug in one of them. Language changes go in both places.
 
 ## Tests
 
 - `tests/root.zig` imports every test file and runs `refAllDecls` over the public modules. A new test file must be added there.
 - Golden tests are read at runtime from the project root:
-  - `tests/mig/<case>.mig` pairs with `<case>.ast` (the expected `print` output) or `<case>.err` (the expected `line:col: message`). `doc_*` cases mirror examples in `docs/mig.md`, and `err_*` cases cover rejected input.
+  - `tests/mig/<case>.mig` pairs with `<case>.ast` (the expected `print` output) or `<case>.err` (the expected `line:col: message`). `doc_*` cases mirror examples in `MIG.md`, and `err_*` cases cover rejected input.
   - `tests/sql/<case>.mig` pairs with `<case>.<dialect>.sql`, which holds `-- up` and `-- down` sections. Every `.mig` is checked against every dialect in `sql.Dialect`.
   - When a golden file is missing, the test prints the actual output, which can be pasted in after checking it.
 - `tests/integration/root.zig` runs commands through the CLI router against a real server, with a fresh database per test (the name passed to `Fixture.init` must be unique).

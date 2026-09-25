@@ -70,7 +70,7 @@ migration CreateUsers {
 }
 ```
 
-Later migrations evolve the schema with `rename_table`, `change_column`, `change_column_null`, `change_column_default`, `rename_index`, `add_foreign_key` and the rest of the [operations](docs/mig.md#operations). Inside `change`, ffmig derives the rollback; an operation that replaces something takes what it replaces, so the rollback can put it back:
+Later migrations evolve the schema with `rename_table`, `change_column`, `change_column_null`, `change_column_default`, `rename_index`, `add_foreign_key` and the rest of the [operations](MIG.md#operations). Inside `change`, ffmig derives the rollback; an operation that replaces something takes what it replaces, so the rollback can put it back:
 
 ```sh
 migration WidenUserAge {
@@ -99,7 +99,7 @@ migration CreateActiveUsers {
 }
 ```
 
-`execute` is not allowed in `change`, since ffmig cannot derive the undo of SQL it does not read. See [Raw SQL](docs/mig.md#raw-sql).
+`execute` is not allowed in `change`, since ffmig cannot derive the undo of SQL it does not read. See [Raw SQL](MIG.md#raw-sql).
 
 ### 3. Apply the migration
 
@@ -109,7 +109,7 @@ ffmig migrate
 
 Each applied migration is recorded in a `schema_migrations` table, with a checksum of its file and the time it ran. `migrate` checks every pending file before it runs anything, so a broken file never leaves a batch half-applied. Each migration runs in its own transaction.
 
-Some statements, such as PostgreSQL's `CREATE INDEX CONCURRENTLY`, cannot run inside a transaction. A migration that needs them runs them with `execute` and starts with `migration AddSlugIndex, transaction: false {`. If one of its statements fails, the ones before it are not undone and the migration stays pending, so keep such migrations small (see [Transactions](docs/mig.md#transactions)).
+Some statements, such as PostgreSQL's `CREATE INDEX CONCURRENTLY`, cannot run inside a transaction. A migration that needs them runs them with `execute` and starts with `migration AddSlugIndex, transaction: false {`. If one of its statements fails, the ones before it are not undone and the migration stays pending, so keep such migrations small (see [Transactions](MIG.md#transactions)).
 
 A migration that waits for a lock, say behind a long query on the table it alters, also blocks every query queued behind it. `lock_timeout` in `[migration]` makes it fail instead, and `statement_timeout` limits how long any one statement may run. Both take a duration such as `"5s"`, `"500ms"`, `"2min"` or `"0"` for no limit. When they are unset, the database server's settings apply.
 

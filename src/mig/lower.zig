@@ -1,7 +1,7 @@
 //! Lowering: turns the parser's generic call tree (`syntax.zig`) into the
 //! typed `ast.Migration`, checking the migration form, operations,
 //! arguments, options, column types and defaults. See "Migration forms"
-//! onward in `docs/mig.md`. This is the only module that reads `syntax`.
+//! onward in `MIG.md`. This is the only module that reads `syntax`.
 //! Stops at the first error.
 
 const std = @import("std");
@@ -711,7 +711,7 @@ const Lowerer = struct {
 };
 
 /// The table a reference named `name` points at without `to:`, by the
-/// rules in "Table names" in `docs/mig.md`.
+/// rules in "Table names" in `MIG.md`.
 fn tableName(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
     if (name.len >= 2 and name[name.len - 1] == 'y' and std.mem.indexOfScalar(u8, "aeiou", name[name.len - 2]) == null) {
         return std.mem.concat(arena, u8, &.{ name[0 .. name.len - 1], "ies" });

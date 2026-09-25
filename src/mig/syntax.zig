@@ -1,5 +1,5 @@
 //! Syntax tree produced by the parser: generic calls, no knowledge of which
-//! operations exist. See "Grammar" in `docs/mig.md`. Lowering turns this
+//! operations exist. See "Grammar" in `MIG.md`. Lowering turns this
 //! into the typed AST.
 
 const Span = @import("token.zig").Span;

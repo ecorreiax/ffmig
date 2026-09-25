@@ -1,5 +1,5 @@
 //! Recursive descent parser for `.mig` source. Builds the generic call tree
-//! in `syntax.zig` following "Grammar" in `docs/mig.md`; it knows nothing
+//! in `syntax.zig` following "Grammar" in `MIG.md`; it knows nothing
 //! about which operations exist. Stops at the first error.
 
 const std = @import("std");

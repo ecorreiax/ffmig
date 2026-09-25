@@ -1,4 +1,4 @@
-//! Tokens produced by the lexer. See "Lexical rules" in `docs/mig.md`.
+//! Tokens produced by the lexer. See "Lexical rules" in `MIG.md`.
 
 const std = @import("std");
 

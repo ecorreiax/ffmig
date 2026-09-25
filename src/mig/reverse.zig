@@ -1,7 +1,7 @@
 //! Derives the operations to apply (`up`) and to undo (`down`) from a
 //! migration. Inside `change`, `down` inverts each operation in reverse
 //! order; `up` / `down` migrations pass through unchanged. Pure AST to AST.
-//! See "Reversibility" in `docs/mig.md`.
+//! See "Reversibility" in `MIG.md`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
