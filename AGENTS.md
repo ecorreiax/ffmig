@@ -14,6 +14,8 @@ make run ARGS="check --ast migrations/foo.mig"
 make test           # unit + golden tests, no database needed
 make integration    # starts a throwaway PostgreSQL on a Unix socket, runs tests/integration
 make fmt            # zig fmt build.zig src tests
+make docs           # preview the docs site at http://localhost:5173 (VitePress, needs npm)
+make docs-build     # build it into docs/.vitepress/dist; fails on a dead link
 make clean          # also deletes ./migrations and ./ffmig.toml made by trying the CLI
 ```
 
@@ -38,6 +40,10 @@ Adding a dialect means a new `sql.Dialect` value (and the same in `ast.Dialect`,
 
 `MIG.md` is the specification. The lexer, parser and lowering implement what it says, and a disagreement between the doc and the code is a bug in one of them. Language changes go in both places.
 
+## User docs
+
+`docs/` holds the user documentation, which VitePress also builds into the website (`docs/README.md` says how). The pages are plain Markdown with relative links, so they read on GitHub too; `docs/language.md` includes `MIG.md` rather than copying it. A change to a command's flags or output goes in `docs/commands.md`, and one to `ffmig.toml` in `docs/configuration.md`.
+
 ## Tests
 
 - `tests/root.zig` imports every test file and runs `refAllDecls` over the public modules. A new test file must be added there.
@@ -45,5 +51,6 @@ Adding a dialect means a new `sql.Dialect` value (and the same in `ast.Dialect`,
   - `tests/mig/<case>.mig` pairs with `<case>.ast` (the expected `print` output) or `<case>.err` (the expected `line:col: message`). `doc_*` cases mirror examples in `MIG.md`, and `err_*` cases cover rejected input.
   - `tests/sql/<case>.mig` pairs with `<case>.<dialect>.sql`, which holds `-- up` and `-- down` sections. Every `.mig` is checked against every dialect in `sql.Dialect`.
   - When a golden file is missing, the test prints the actual output, which can be pasted in after checking it.
+- `tests/docs.zig` checks that every ` ```mig ` block in `docs/` and `MIG.md` holding a whole migration parses, and that `docs/commands.md` has a `### <command>` section for every command.
 - `examples/` holds one `.mig` per operation or feature. `tests/examples.zig` checks that each parses, is reversible, and writes SQL, so a language change that breaks an example fails `make test`.
 - `tests/integration/root.zig` runs commands through the CLI router against a real server, with a fresh database per test (the name passed to `Fixture.init` must be unique).

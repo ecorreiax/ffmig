@@ -5,9 +5,9 @@ parser and lowering implement what it says, and the tests cite it. If the
 code and this document disagree, one of them is a bug.
 
 A `.mig` file describes one schema change in database-neutral terms. It is
-never SQL, and ffmig turns it into SQL for the configured database.
+never SQL, and FFMig turns it into SQL for the configured database.
 
-```
+```mig
 migration AddRoleToUsers {
   change {
     add_column :users, :role, :integer, null: false, default: 0
@@ -51,7 +51,7 @@ A string that starts with `"""` runs across lines until the next `"""`
 that is not escaped.
 It is a `STRING` like any other, so it can be used wherever a string can:
 
-```
+```mig
 execute """
   UPDATE users
   SET name = 'Ada "the first" Lovelace'
@@ -114,10 +114,10 @@ checked after parsing, by lowering.
 
 A migration body is exactly one of two forms.
 
-**`change`**: ffmig derives the undo steps. Every operation in it must be
+**`change`**: FFMig derives the undo steps. Every operation in it must be
 reversible (see [Reversibility](#reversibility)).
 
-```
+```mig
 migration AddRoleToUsers {
   change {
     add_column :users, :role, :integer, null: false, default: 0
@@ -128,7 +128,7 @@ migration AddRoleToUsers {
 **`up` + `down`**: you write both directions and nothing is derived, so
 irreversible operations such as `drop_table :t` without a block are fine.
 
-```
+```mig
 migration BackfillSlugs {
   up {
     add_column :posts, :slug, :string
@@ -173,7 +173,7 @@ Some statements cannot run inside a transaction, such as PostgreSQL's
 `CREATE INDEX CONCURRENTLY` and `VACUUM`. A migration that needs them
 opts out with `transaction: false` after its name:
 
-```
+```mig
 migration AddSlugIndex, transaction: false {
   change {
     add_index :posts, :slug, unique: true
@@ -200,7 +200,7 @@ migration AddSlugIndex, transaction: false {
 
 Statements the language does not model run through [`execute`](#raw-sql):
 
-```
+```mig
 migration AddSlugIndexConcurrently, transaction: false {
   up {
     execute "CREATE INDEX CONCURRENTLY index_posts_on_slug ON posts (slug)"
@@ -263,7 +263,7 @@ Common rules:
 
 ### `create_table` / `drop_table`
 
-```
+```mig
 create_table :users, id: :uuid {
   string :email, null: false
   timestamps
@@ -280,7 +280,7 @@ create_table :users, id: :uuid {
 
 ### `rename_table`
 
-```
+```mig
 rename_table :posts, :articles
 ```
 
@@ -297,7 +297,7 @@ rename_table :posts, :articles
   Operations that compute a default name, such as
   `remove_index :articles, :title` and `remove_reference :articles, :user`,
   then find it. Indexes and foreign keys with a custom `name:` keep it.
-- ffmig checks each file on its own and cannot know which of these exist,
+- FFMig checks each file on its own and cannot know which of these exist,
   so the database looks them up when the migration runs. In PostgreSQL,
   the `ALTER TABLE ... RENAME TO` is followed by a `DO` block that reads
   the catalog and renames each one; both are sent as one statement, so
@@ -311,7 +311,7 @@ rename_table :posts, :articles
 
 ### `add_column` / `remove_column`
 
-```
+```mig
 add_column :users, :role, :integer, null: false, default: 0
 remove_column :users, :role, :integer, null: false, default: 0
 remove_column :users, :role
@@ -325,13 +325,13 @@ remove_column :users, :role
 
 ### `rename_column`
 
-```
+```mig
 rename_column :users, :name, :full_name
 ```
 
 ### `change_column`
 
-```
+```mig
 change_column :users, :age, :bigint, from: :integer
 change_column :users, :name, :string, limit: 255, from: :string, from_limit: 100
 change_column :users, :bio, :text
@@ -363,7 +363,7 @@ change_column :users, :bio, :text
 
 ### `change_column_null`
 
-```
+```mig
 change_column_null :users, :role, false, default: 0
 change_column_null :users, :nickname, true
 ```
@@ -377,13 +377,13 @@ change_column_null :users, :nickname, true
   (`change_column_null cannot fill nulls with nil`), and only with
   `false` (`change_column_null takes 'default:' only with false`). It does
   not become the column's default; `change_column_default` sets that.
-  ffmig does not know the column's type here, so the database checks that
+  FFMig does not know the column's type here, so the database checks that
   the value fits.
 - The undo flips `true` and `false`. It does not put the nulls back.
 
 ### `change_column_default`
 
-```
+```mig
 change_column_default :users, :role, from: 0, to: 1
 change_column_default :posts, :published_at, from: nil, to: :now
 change_column_default :users, :role, to: nil
@@ -395,13 +395,13 @@ change_column_default :users, :role, to: nil
   [Column defaults](#column-defaults), or `nil` for no default.
 - With `from:`, the undo sets the `from:` default back. Without it, the
   change is irreversible.
-- ffmig does not know the column's type here, so it does not check that
+- FFMig does not know the column's type here, so it does not check that
   the value fits (`to: "x"` on an `integer` column); the database does.
   A named default must still be a known name (`unknown default ':today'`).
 
 ### `add_index` / `remove_index`
 
-```
+```mig
 add_index :users, :email, unique: true
 add_index :users, :email, name: "users_email_key"
 remove_index :users, :email, unique: true
@@ -422,7 +422,7 @@ remove_index :users, name: "users_email_key"
 
 ### `rename_index`
 
-```
+```mig
 rename_index :users, "index_users_on_email", "users_email_key"
 ```
 
@@ -433,7 +433,7 @@ rename_index :users, "index_users_on_email", "users_email_key"
 
 ### `add_reference` / `remove_reference`
 
-```
+```mig
 add_reference :posts, :user, null: false, on_delete: :cascade
 remove_reference :posts, :user, null: false, on_delete: :cascade
 ```
@@ -448,7 +448,7 @@ remove_reference :posts, :user, null: false, on_delete: :cascade
 
 ### `add_foreign_key` / `remove_foreign_key`
 
-```
+```mig
 add_foreign_key :posts, :users, column: :author_id, on_delete: :cascade
 remove_foreign_key :posts, :users, column: :author_id, on_delete: :cascade
 remove_foreign_key :posts, name: "posts_author_fkey"
@@ -459,9 +459,9 @@ remove_foreign_key :posts, name: "posts_author_fkey"
   [reference](#references), for a column that already exists. It adds no
   column and no index.
 - `column:` is a symbol and is required
-  (`add_foreign_key needs 'column:'`): ffmig does not guess it from the
+  (`add_foreign_key needs 'column:'`): FFMig does not guess it from the
   table name.
-- `on_delete:` is as in [Reference options](#reference-options). ffmig
+- `on_delete:` is as in [Reference options](#reference-options). FFMig
   does not see the column here, so it cannot reject `:nullify` on a
   `null: false` column; the database then refuses the delete.
 - `name:` is a string. When absent, the foreign key is named
@@ -477,7 +477,7 @@ remove_foreign_key :posts, name: "posts_author_fkey"
 `execute` runs SQL that the language does not model: extensions, views,
 functions, triggers, check constraints, data backfills.
 
-```
+```mig
 migration CreateActiveUsers {
   up {
     execute "CREATE EXTENSION IF NOT EXISTS pgcrypto"
@@ -495,11 +495,11 @@ migration CreateActiveUsers {
 
 - `execute` takes one string, the SQL
   (`execute expects "sql" to be a string, found a symbol`), usually a
-  [multi-line string](#multi-line-strings). ffmig does not read it: it
+  [multi-line string](#multi-line-strings). FFMig does not read it: it
   is sent to the database as written, as one statement of the migration.
   A string of only whitespace and `;` is an error (`execute has no SQL`).
 - It is allowed only in `up` and `down`, never in `change`
-  (`execute is not allowed in 'change'; write 'up' and 'down'`): ffmig
+  (`execute is not allowed in 'change'; write 'up' and 'down'`): FFMig
   cannot derive the undo of SQL it does not understand, so the file
   writes both directions.
 - The string may hold several statements separated by `;`. PostgreSQL
@@ -576,7 +576,7 @@ For example `limit: 10` on an `integer` column is an error, and so is
 
 A reference is a column that points at the `id` of another table's row:
 
-```
+```mig
 create_table :sessions, id: :uuid {
   references :user, null: false, type: :uuid, on_delete: :cascade
   string :ip_address
@@ -606,7 +606,7 @@ The name is written without `_id`, which the column adds:
 | `index:`       | `true`, `false` or `:unique`            | `true`  |
 | `on_delete:`   | `:cascade`, `:nullify` or `:restrict`   | none    |
 
-- `type:` must match the `id:` of the table pointed at. ffmig checks each
+- `type:` must match the `id:` of the table pointed at. FFMig checks each
   file on its own, so it cannot see that table and does not check this;
   the database does.
 - `on_delete:` says what happens to this row when the row it points at is
@@ -661,7 +661,7 @@ created. Create the first one's reference without a foreign key, and add
 it with [`add_foreign_key`](#add_foreign_key--remove_foreign_key) once the
 second exists:
 
-```
+```mig
 create_table :users {
   references :team, foreign_key: false
 }
@@ -675,7 +675,7 @@ add_foreign_key :users, :teams, column: :team_id
 
 `default:` is optional on every column, including `null: false` ones. If a
 row is inserted without a value for a non-null column that has no default,
-the database reports the error; ffmig does not check for it.
+the database reports the error; FFMig does not check for it.
 
 A default is either a literal or a named default.
 
@@ -697,7 +697,7 @@ A literal is stored as-is. Its kind must fit the column type:
 
 - `default: nil` means "explicitly no default" and is rejected on a
   `null: false` column (`default: nil on non-null column 'role'`).
-- ffmig does not parse the contents of string literals: `"not a date"` on
+- FFMig does not parse the contents of string literals: `"not a date"` on
   a `date` column is valid here and fails in the database.
 
 ### Named defaults
@@ -722,7 +722,7 @@ not part of the language. An `up` / `down` migration can set one with
 
 ## Reversibility
 
-Inside `change`, ffmig derives the `down` steps by inverting each
+Inside `change`, FFMig derives the `down` steps by inverting each
 operation, in reverse order. An operation is reversible when it carries
 everything needed to undo it:
 
@@ -769,7 +769,7 @@ derived, so reversibility does not matter.
 
 ## Worked example
 
-```
+```mig
 # Profiles for users, keyed by UUID.
 migration CreateUsersProfile {
   change {
@@ -807,7 +807,7 @@ What each line lowers to:
 
 The derived `down` is the inverse of each operation in reverse order:
 
-```
+```mig
 remove_index :users_profile, :email, unique: true
 drop_table :users_profile, id: :uuid { ...same columns... }
 ```

@@ -1,0 +1,561 @@
+/*
+ * Vercel's structure (Geist, monochrome surfaces, 1px borders, pure black
+ * in dark mode) with Django's greens as the one accent colour.
+ */
+
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+  --ff-green-950: #092e20;
+  --ff-green-900: #0c4b33;
+  --ff-green-500: #44b78b;
+  --ff-green-100: #c9f0dd;
+
+  --vp-font-family-base: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --vp-font-family-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: #fafafa;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #f4f4f4;
+
+  --vp-c-border: #e5e5e5;
+  --vp-c-divider: #ebebeb;
+  --vp-c-gutter: #ebebeb;
+
+  --vp-c-text-1: #171717;
+  --vp-c-text-2: #525252;
+  --vp-c-text-3: #8f8f8f;
+
+  --vp-c-brand-1: var(--ff-green-900);
+  --vp-c-brand-2: var(--ff-green-950);
+  --vp-c-brand-3: var(--ff-green-900);
+  --vp-c-brand-soft: rgba(68, 183, 139, 0.14);
+
+  --vp-c-default-1: #d4d4d4;
+  --vp-c-default-2: #e5e5e5;
+  --vp-c-default-3: #ededed;
+  --vp-c-default-soft: #f4f4f4;
+
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-2: var(--vp-c-brand-2);
+  --vp-c-tip-3: var(--vp-c-brand-3);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-alt-bg: var(--vp-c-bg);
+  --vp-button-alt-border: var(--vp-c-border);
+  --vp-button-alt-hover-bg: var(--vp-c-bg-soft);
+  --vp-button-alt-hover-border: var(--vp-c-default-1);
+
+  --vp-code-block-bg: #fafafa;
+  --vp-code-bg: #f4f4f4;
+  --vp-code-color: var(--vp-c-text-1);
+  --vp-code-line-highlight-color: rgba(68, 183, 139, 0.12);
+
+  --vp-nav-bg-color: rgba(255, 255, 255, 0.8);
+  --vp-sidebar-bg-color: var(--vp-c-bg);
+  --vp-local-search-bg: var(--vp-c-bg);
+  --vp-local-search-highlight-bg: var(--vp-c-brand-soft);
+  --vp-local-search-highlight-text: var(--vp-c-brand-1);
+
+  --ff-grid-line: rgba(0, 0, 0, 0.05);
+  --ff-glow: rgba(68, 183, 139, 0.22);
+  --ff-accent: linear-gradient(95deg, var(--ff-green-900), #1f8a62 55%, var(--ff-green-500));
+}
+
+.dark {
+  --vp-c-bg: #000000;
+  --vp-c-bg-alt: #0a0a0a;
+  --vp-c-bg-elv: #0a0a0a;
+  --vp-c-bg-soft: #111111;
+
+  --vp-c-border: #262626;
+  --vp-c-divider: #1c1c1c;
+  --vp-c-gutter: #1c1c1c;
+
+  --vp-c-text-1: #ededed;
+  --vp-c-text-2: #a1a1a1;
+  --vp-c-text-3: #6b6b6b;
+
+  --vp-c-brand-1: var(--ff-green-500);
+  --vp-c-brand-2: #63c9a0;
+  --vp-c-brand-3: var(--ff-green-500);
+  --vp-c-brand-soft: rgba(68, 183, 139, 0.16);
+
+  --vp-c-default-1: #3a3a3a;
+  --vp-c-default-2: #2a2a2a;
+  --vp-c-default-3: #1f1f1f;
+  --vp-c-default-soft: #141414;
+
+  --vp-button-brand-text: #000000;
+  --vp-button-brand-hover-text: #000000;
+  --vp-button-brand-active-text: #000000;
+
+  --vp-code-block-bg: #0a0a0a;
+  --vp-code-bg: #161616;
+
+  --vp-nav-bg-color: rgba(0, 0, 0, 0.75);
+
+  --ff-grid-line: rgba(255, 255, 255, 0.06);
+  --ff-glow: rgba(68, 183, 139, 0.18);
+  --ff-accent: linear-gradient(95deg, var(--ff-green-500), var(--ff-green-100));
+}
+
+::selection {
+  background: rgba(68, 183, 139, 0.3);
+}
+
+body {
+  font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------ nav, sidebar */
+
+.VPNavBar:not(.home.top) .content-body,
+.VPNavBar:not(.home.top) .title {
+  backdrop-filter: saturate(180%) blur(10px);
+}
+
+.VPNavBar .title {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+@media (min-width: 960px) {
+  .VPSidebar {
+    border-right: 1px solid var(--vp-c-divider);
+  }
+}
+
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > .link > .text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+}
+
+.VPSidebarItem .link:hover .text {
+  color: var(--vp-c-text-1);
+}
+
+.VPSidebarItem.is-active > .item .link > .text {
+  font-weight: 500;
+}
+
+.DocSearch-Button,
+.VPNavBarSearch .DocSearch-Button {
+  border: 1px solid var(--vp-c-border);
+  background: var(--vp-c-bg-alt);
+}
+
+/* ------------------------------------------------------------ buttons */
+
+.VPButton.medium,
+.VPButton.big {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+}
+
+/* ------------------------------------------------------------ docs pages */
+
+.vp-doc h1 {
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.vp-doc h2 {
+  margin-top: 56px;
+  padding-top: 0;
+  border-top: none;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.vp-doc h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.vp-doc a {
+  text-decoration-color: rgba(68, 183, 139, 0.5);
+  text-underline-offset: 3px;
+  font-weight: 500;
+}
+
+.vp-doc a:hover {
+  text-decoration-color: currentColor;
+}
+
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 5px;
+  padding: 2px 5px;
+  font-size: 0.85em;
+}
+
+.vp-doc a > code {
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.vp-doc tr {
+  border-top: none;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: transparent;
+}
+
+.vp-doc th,
+.vp-doc td {
+  border: none;
+  border-bottom: 1px solid var(--vp-c-border);
+}
+
+.vp-doc th + th,
+.vp-doc td + td {
+  border-left: 1px solid var(--vp-c-border);
+}
+
+.vp-doc tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.vp-doc th {
+  background: var(--vp-c-bg-alt);
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+@media (min-width: 640px) {
+  .vp-doc div[class*='language-'] {
+    border: 1px solid var(--vp-c-border);
+    border-radius: 8px;
+  }
+}
+
+.vp-doc .custom-block {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 8px;
+}
+
+/* ------------------------------------------------------------ landing: hero */
+
+.VPHome .VPHero {
+  position: relative;
+  overflow: hidden;
+}
+
+/* A faint grid that fades out from the top, with a green glow behind the heading. */
+.VPHome .VPHero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, var(--ff-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--ff-grid-line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  background-position: center top;
+  mask-image: radial-gradient(ellipse 70% 65% at 50% 0%, #000 40%, transparent 100%);
+  pointer-events: none;
+}
+
+.VPHome .VPHero::after {
+  content: '';
+  position: absolute;
+  top: -180px;
+  left: 50%;
+  width: 900px;
+  height: 480px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, var(--ff-glow), transparent);
+  pointer-events: none;
+}
+
+.VPHome .VPHero .container {
+  position: relative;
+  z-index: 1;
+}
+
+.VPHome .VPHero .container .main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 860px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.VPHome .VPHero .heading .text {
+  max-width: none;
+  font-size: clamp(40px, 7.5vw, 76px);
+  line-height: 1.02;
+  font-weight: 700;
+  letter-spacing: -0.055em;
+  color: var(--vp-c-text-1);
+}
+
+.VPHome .VPHero .heading .text .accent {
+  background: var(--ff-accent);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.VPHome .VPHero .tagline {
+  max-width: 640px;
+  margin: 0 auto;
+  padding-top: 20px;
+  font-size: clamp(17px, 2.2vw, 20px);
+  line-height: 1.55;
+  text-wrap: balance;
+  color: var(--vp-c-text-2);
+}
+
+.VPHome .VPHero .actions {
+  justify-content: center;
+  padding-top: 32px;
+}
+
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 28px;
+  padding: 5px 12px;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 999px;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-2);
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  transition: border-color 0.2s;
+}
+
+.hero-badge:hover {
+  border-color: var(--vp-c-default-1);
+  color: var(--vp-c-text-1);
+}
+
+.hero-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ff-green-500);
+  box-shadow: 0 0 0 3px rgba(68, 183, 139, 0.2);
+}
+
+.hero-badge-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--vp-c-border);
+}
+
+/* ------------------------------------------------------------ landing: features */
+
+/* One bordered grid with hairlines between the cells, instead of cards. */
+.VPHome .VPFeatures .container .items {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--vp-c-border);
+}
+
+@media (min-width: 640px) {
+  .VPHome .VPFeatures .container .items {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHome .VPFeatures .container .items {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.VPHome .VPFeatures .container .items .item {
+  width: 100%;
+  padding: 0;
+}
+
+.VPHome .VPFeature {
+  border: none;
+  border-radius: 0;
+  background: var(--vp-c-bg);
+  transition: background-color 0.2s;
+}
+
+.VPHome .VPFeature:hover {
+  background: var(--vp-c-bg-alt);
+}
+
+.VPHome .VPFeature .box {
+  padding: 28px;
+}
+
+.VPHome .VPFeature .icon {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 18px;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 8px;
+  background: var(--vp-c-bg-alt);
+  color: var(--vp-c-brand-1);
+}
+
+.VPHome .VPFeature .icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.VPHome .VPFeature .title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.VPHome .VPFeature .details {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+/* ------------------------------------------------------------ landing: showcase */
+
+.showcase {
+  margin-top: 40px;
+}
+
+.showcase-head {
+  max-width: 760px;
+  margin: 0 auto 40px;
+  text-align: center;
+}
+
+.vp-doc .showcase-head h2 {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.vp-doc .showcase-head p {
+  margin: 16px 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 17px;
+  text-wrap: balance;
+}
+
+.code-pair {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 960px) {
+  .code-pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+}
+
+.code-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--vp-code-block-bg);
+}
+
+.code-card + .code-card,
+.code-pair + .code-card {
+  margin-top: 16px;
+}
+
+.code-pair .code-card + .code-card {
+  margin-top: 0;
+}
+
+.code-card-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--vp-c-border);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-3);
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+}
+
+.code-card-bar::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vp-c-default-1);
+}
+
+.code-card-bar.is-mig::before {
+  background: var(--ff-green-500);
+}
+
+.vp-doc .code-card div[class*='language-'] {
+  flex: 1;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.vp-doc .code-card div[class*='language-'] > span.lang {
+  display: none;
+}
+
+.showcase-note {
+  margin-top: 16px;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* A flag such as `--config <path>` stays on one line in a table cell. */
+.vp-doc td code {
+  white-space: nowrap;
+}
+
+/* Code in a heading, such as `[migration]`, reads as part of the heading. */
+.vp-doc h1 code,
+.vp-doc h2 code,
+.vp-doc h3 code {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.9em;
+  letter-spacing: -0.02em;
+}
+
+.VPHome .VPFeature .details code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.9em;
+  color: var(--vp-c-text-1);
+}
