@@ -38,7 +38,7 @@ always gives the newest.
    ```
 
 4. Watch the Release workflow in the Actions tab. When it is green, check
-   that `brew install ffmig`, the `curl` command, `scoop install ffmig`
+   that `brew install ecorreiax/tap/ffmig`, the `curl` command, `scoop install ffmig`
    and `docker run ghcr.io/ecorreiax/ffmig --version` all work as
    `README.md` says.
 
@@ -54,7 +54,7 @@ Done once, by the repository owner, before the first release:
 
 1. **Homebrew tap.** Create the public repository `ecorreiax/homebrew-tap`.
    It may stay empty: the first release pushes `Formula/ffmig.rb` to its
-   `main`. `brew tap ecorreiax/tap` finds it by that name.
+   `main`. `brew install ecorreiax/tap/ffmig` finds it by that name.
 2. **Scoop bucket.** Create the public repository `ecorreiax/scoop-bucket`,
    which may stay empty too (the release pushes `bucket/ffmig.json`).
 3. **Token.** Create a fine-grained personal access token with *Contents:
