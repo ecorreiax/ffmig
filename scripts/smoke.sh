@@ -25,9 +25,11 @@ trap cleanup EXIT INT TERM
 
 "${bin}initdb" -D "$dir/data" -U ffmig -A trust -E UTF8 --no-locale --no-sync >"$dir/initdb.log" 2>&1 ||
     { cat "$dir/initdb.log"; exit 1; }
-# MSYS2 on Windows would turn /CN=localhost into a path.
-MSYS2_ARG_CONV_EXCL='*' openssl req -new -x509 -days 1 -nodes -subj /CN=localhost \
-    -keyout "$dir/data/server.key" -out "$dir/data/server.crt" >/dev/null 2>&1
+# MSYS2 on Windows would turn /CN=localhost into a path, but must still
+# convert the file paths.
+MSYS2_ARG_CONV_EXCL=/CN openssl req -new -x509 -days 1 -nodes -subj /CN=localhost \
+    -keyout "$dir/data/server.key" -out "$dir/data/server.crt" >"$dir/openssl.log" 2>&1 ||
+    { cat "$dir/openssl.log"; exit 1; }
 chmod 600 "$dir/data/server.key"
 # TLS only: plain connections are rejected.
 printf 'hostssl all all 127.0.0.1/32 trust\nhostnossl all all 0.0.0.0/0 reject\n' >"$dir/data/pg_hba.conf"
