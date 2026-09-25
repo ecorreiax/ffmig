@@ -53,7 +53,11 @@ pub const Value = struct {
         /// Unescaped. A slice of the source unless it had escapes.
         string: []const u8,
         integer: i64,
+        /// As written, e.g. `0.50`; never converted to a float.
+        decimal: []const u8,
         boolean: bool,
         nil,
+        /// `[a, b]`, at least one value. Only index columns take one.
+        list: []Value,
     };
 };

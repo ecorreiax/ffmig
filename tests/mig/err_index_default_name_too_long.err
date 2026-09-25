@@ -1,0 +1,1 @@
+3:5: index name 'index_subscription_events_on_subscription_id_and_customer_id_and_created_at' is longer than 63 bytes; give the index a shorter 'name:'

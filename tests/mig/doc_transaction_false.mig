@@ -1,5 +1,5 @@
 migration AddSlugIndex, transaction: false {
   change {
-    add_index :posts, :slug, unique: true
+    add_index :posts, :slug, unique: true, algorithm: :concurrently
   }
 }

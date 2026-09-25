@@ -1,0 +1,10 @@
+migration M {
+  change {
+    create_table :events {
+      datetime :at, time_zone: true, default: :now
+      datetime :local_at, time_zone: false
+      timestamps time_zone: true
+    }
+    change_column :events, :local_at, :datetime, time_zone: true, from: :datetime
+  }
+}

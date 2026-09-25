@@ -1,0 +1,46 @@
+# Tests every push to main and every pull request: formatting, the unit
+# and golden tests, and the integration tests against a real PostgreSQL,
+# on Linux and macOS in the nix dev shell, as CONTRIBUTING.md runs them.
+# Then builds and smoke-tests the release binaries (build.yml).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-${{ runner.os }}-${{ hashFiles('flake.lock', 'build.zig', 'build.zig.zon') }}
+      - name: Enter the dev shell
+        run: nix develop --command zig version
+      - name: Formatting
+        run: |
+          nix develop --command make fmt
+          git diff --exit-code
+      - name: Unit tests
+        run: nix develop --command make test
+      - name: Integration tests
+        run: nix develop --command make integration
+
+  build:
+    uses: ./.github/workflows/build.yml

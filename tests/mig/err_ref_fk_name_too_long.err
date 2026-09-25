@@ -1,0 +1,1 @@
+4:18: foreign key name 'fk_subscription_invoice_line_items_on_subscription_invoice_adjustment_id' is longer than 63 bytes; write the reference with 'foreign_key: false' and add_foreign_key with a 'name:'

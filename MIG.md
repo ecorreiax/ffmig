@@ -29,6 +29,7 @@ migration AddRoleToUsers {
 | `LABEL`   | `IDENT` immediately followed by `:`          | `null:`, `default:`   |
 | `SYMBOL`  | `:` immediately followed by `IDENT`          | `:users`, `:now`      |
 | `INTEGER` | `-?[0-9]+`, must fit in a signed 64-bit int  | `0`, `-5`, `255`      |
+| `DECIMAL` | `-?[0-9]+\.[0-9]+`, kept as written          | `0.5`, `-12.250`      |
 | `STRING`  | `"..."` on one line, escapes `\" \\ \n \t`, or a [multi-line string](#multi-line-strings) | `"guest"`, `"a\"b"`   |
 | punctuation | `{ } , [ ]`                                | —                     |
 
@@ -38,12 +39,16 @@ migration AddRoleToUsers {
 - `true`, `false` and `nil` are keywords. `migration`, `change`, `up` and
   `down` are contextual: they are plain identifiers that the parser checks
   by text, so they can still be used as symbols (`:up`) or labels.
-- `[` and `]` are reserved for multi-column indexes. They lex, but no rule
-  of the grammar accepts them yet, so any use is a syntax error.
-- Any other byte outside a string or comment (`@`, `=`, `;`, `.`, ...) is
+- `[` and `]` enclose a list: `[:user_id, :created_at]`. Only the column
+  of [`add_index` and `remove_index`](#add_index--remove_index) takes one.
+- A `DECIMAL` has digits on both sides of the `.`: `1.` and `.5` are
+  invalid. It is never converted to a binary float, so `0.10` stays
+  `0.10` in the SQL.
+- Any other byte outside a string or comment (`@`, `=`, `;`, ...) is
   invalid. So are an unterminated string, a line break inside a one-line
   string, an unknown escape such as `\x`, a lone `:`, an integer out of
-  range, and an integer immediately followed by an identifier (`0abc`).
+  range, and a number immediately followed by an identifier or a `.`
+  (`0abc`, `1.5.2`).
 
 ### Multi-line strings
 
@@ -87,7 +92,8 @@ section    = ( "change" | "up" | "down" ) "{" { call } "}" ;
 call       = IDENT [ args ] [ block ] ;
 args       = arg { "," arg } ;
 arg        = value | LABEL value ;          (* positional before labeled *)
-value      = SYMBOL | STRING | INTEGER | "true" | "false" | "nil" ;
+value      = SYMBOL | STRING | INTEGER | DECIMAL | "true" | "false" | "nil" | list ;
+list       = "[" value { "," value } "]" ;
 block      = "{" { call } "}" ;
 ```
 
@@ -95,7 +101,9 @@ Syntax rules beyond the EBNF:
 
 - Positional arguments come before labeled ones.
   `add_index :users, unique: true, :email` is an error.
-- No trailing comma: `add_index :users, :email,` is an error.
+- No trailing comma: `add_index :users, :email,` is an error, and so are
+  `[:a, ]` and an empty list `[]`.
+- A list may span lines: inside `[` `]` a line break is whitespace.
 - A file holds exactly one migration. Anything after its closing `}`
   other than comments is an error.
 - Arguments after the migration name follow a comma, like a call's:
@@ -176,7 +184,7 @@ opts out with `transaction: false` after its name:
 ```mig
 migration AddSlugIndex, transaction: false {
   change {
-    add_index :posts, :slug, unique: true
+    add_index :posts, :slug, unique: true, algorithm: :concurrently
   }
 }
 ```
@@ -201,18 +209,17 @@ migration AddSlugIndex, transaction: false {
 Statements the language does not model run through [`execute`](#raw-sql):
 
 ```mig
-migration AddSlugIndexConcurrently, transaction: false {
+migration VacuumPosts, transaction: false {
   up {
-    execute "CREATE INDEX CONCURRENTLY index_posts_on_slug ON posts (slug)"
+    execute "VACUUM ANALYZE posts"
   }
   down {
-    execute "DROP INDEX CONCURRENTLY index_posts_on_slug"
   }
 }
 ```
 
 Without `transaction: false`, PostgreSQL refuses it:
-`CREATE INDEX CONCURRENTLY cannot run inside a transaction block`.
+`VACUUM cannot run inside a transaction block`.
 
 ## Database neutrality
 
@@ -238,8 +245,8 @@ generating SQL; the file itself stays valid.
 | `change_column` | `:table, :column, :type`        | `limit:`, `precision:`, `scale:`, `from:`, `from_limit:`, `from_precision:`, `from_scale:` | none |
 | `change_column_null` | `:table, :column, true/false` | `default:`                          | none  |
 | `change_column_default` | `:table, :column`        | `to:` (required), `from:`              | none  |
-| `add_index`     | `:table, :column`               | `unique:`, `name:`                     | none  |
-| `remove_index`  | `:table [, :column]`            | `unique:`, `name:`                     | none  |
+| `add_index`     | `:table, :column` or `:table, [:columns]` | `unique:`, `name:`, `where:`, `algorithm:` | none |
+| `remove_index`  | `:table [, :column or [:columns]]` | `unique:`, `name:`, `where:`, `algorithm:` | none |
 | `rename_index`  | `:table, "from", "to"`          | none                                   | none  |
 | `add_reference` | `:table, :name`                 | reference options                      | none  |
 | `remove_reference` | `:table, :name`              | reference options                      | none  |
@@ -250,9 +257,16 @@ generating SQL; the file itself stays valid.
 Common rules:
 
 - Positional arguments are symbols, except `execute`'s SQL,
-  `rename_index`'s index names (strings, like `name:`) and
-  `change_column_null`'s `true` or `false`. Table, column and type names
-  are never strings: `add_column "users", ...` is an error.
+  `rename_index`'s index names (strings, like `name:`),
+  `change_column_null`'s `true` or `false`, and an index's list of
+  columns. Table, column and type names are never strings:
+  `add_column "users", ...` is an error.
+- A name is at most 63 bytes: a table, a column, a `name:`, and the
+  default name of an index or a foreign key
+  (`name '...' is longer than 63 bytes`). That is PostgreSQL's limit, the
+  smallest among the databases the language targets, and PostgreSQL would
+  cut a longer name short, so that an operation computing the same
+  default name later would not find it.
 - The number of positional arguments must match exactly, e.g.
   `add_column expects 3 arguments (:table, :column, :type), got 2`.
 - An option not listed for an operation is an error
@@ -338,14 +352,16 @@ change_column :users, :bio, :text
 ```
 
 - Changes the column's type to `:type`, a [column type](#column-types)
-  written as a symbol. `limit:`, `precision:` and `scale:` follow the
-  rules in [Column options](#column-options). It changes only the type:
+  written as a symbol. `limit:`, `precision:`, `scale:` and `time_zone:`
+  follow the rules in [Column options](#column-options), so
+  `change_column :events, :at, :datetime, time_zone: true, from: :datetime`
+  makes a column time-zone aware. It changes only the type:
   the column keeps its nullability and default, which
   [`change_column_null`](#change_column_null) and
   [`change_column_default`](#change_column_default) change
   (`unknown option 'null' for change_column`).
 - `from:` is the type before the change, as a symbol, and `from_limit:`,
-  `from_precision:` and `from_scale:` are its size options, by the same
+  `from_precision:`, `from_scale:` and `from_time_zone:` are its options, by the same
   rules (`'from_limit:' is only allowed on string columns`). They describe
   the old type so that the undo can restore it, like `remove_column`'s
   type, which makes `change_column` reversible. Without `from:` it is
@@ -404,20 +420,42 @@ change_column_default :users, :role, to: nil
 ```mig
 add_index :users, :email, unique: true
 add_index :users, :email, name: "users_email_key"
+add_index :events, [:user_id, :created_at]
+add_index :users, :email, unique: true, where: "deleted_at IS NULL"
 remove_index :users, :email, unique: true
 remove_index :users, name: "users_email_key"
 ```
 
-- One column per index.
+- The column is a symbol, or a list of symbols for an index on several
+  columns, in index order: `[:user_id, :created_at]`. A column may appear
+  once (`column 'a' listed twice in the index`), and `[:email]` is the
+  same as `:email`.
 - `unique:` is `true` or `false` (default `false`).
 - `name:` is a string. When absent, the index is named
-  `index_<table>_on_<column>` (`index_users_on_email`).
+  `index_<table>_on_<column>` (`index_users_on_email`), with the columns
+  of a list joined by `_and_` (`index_events_on_user_id_and_created_at`).
+  A default name longer than 63 bytes is an error that asks for a
+  shorter `name:`.
+- `where:` makes a partial index, over only the rows where the condition
+  holds. It is a string of SQL, sent as written (`WHERE deleted_at IS
+  NULL`), so a file that uses it depends on that SQL being valid for its
+  database, as with [`execute`](#raw-sql). Unlike `execute`, it is
+  allowed in `change`: FFMig still models the index, so it can undo it.
+  A string of only whitespace is an error (`'where:' has no condition`).
+- `algorithm: :concurrently` builds or drops the index without blocking
+  writes to the table, which matters on a large table. PostgreSQL does it
+  with `CREATE INDEX CONCURRENTLY` / `DROP INDEX CONCURRENTLY`, which
+  cannot run in a transaction, so the migration must have
+  [`transaction: false`](#transactions)
+  (`a concurrent index needs 'transaction: false' on the migration`). If
+  a concurrent build fails, PostgreSQL leaves an invalid index behind:
+  drop it by hand before running the migration again.
 - `remove_index` needs a column, a `name:`, or both
   (`remove_index needs a column or 'name:'`). With only `name:`, it drops
   that index; with a column, it drops the index with the given or default
   name.
-- `remove_index` accepts `unique:` so that it can describe the index being
-  removed, like `remove_column` does with a type. See
+- `remove_index` accepts `unique:` and `where:` so that it can describe
+  the index being removed, like `remove_column` does with a type. See
   [Reversibility](#reversibility).
 
 ### `rename_index`
@@ -441,6 +479,10 @@ remove_reference :posts, :user, null: false, on_delete: :cascade
 - `add_reference :t, :name, opts` adds the same column, foreign key and
   index as `references :name, opts` inside a `create_table :t` block (see
   [References](#references)). It lowers to an `add_column` of that column.
+- The index and foreign key are named after the table and column, and a
+  name longer than 63 bytes is an error. Write the reference with
+  `index: false` or `foreign_key: false` and add that part with
+  `add_index` or `add_foreign_key` and a shorter `name:`.
 - `remove_reference` drops the column, which drops its foreign key and
   index with it. It lowers to a `remove_column` that describes the column.
   Every reference option has a default, so it is always reversible: the
@@ -531,8 +573,9 @@ timestamps
 - `<type>` is a bare identifier here (`string :email`), where
   `add_column` takes a symbol (`:string`). An unknown type is
   `unknown column type 'strng'`.
-- `timestamps` takes no arguments and adds `created_at` and `updated_at`,
-  both `datetime, null: false` with no default.
+- `timestamps` adds `created_at` and `updated_at`, both
+  `datetime, null: false` with no default. Its only option is
+  `time_zone:`, which it gives both columns (`timestamps time_zone: true`).
 - Column statements take no block.
 - A column name may appear only once per table, counting the two
   `timestamps` columns and the `<name>_id` column of each reference:
@@ -553,7 +596,7 @@ timestamps
 | `decimal`  | exact decimal, optionally `precision:`/`scale:` |
 | `boolean`  | true / false                                    |
 | `date`     | calendar date                                   |
-| `datetime` | date and time, without time zone                |
+| `datetime` | date and time, without time zone unless `time_zone: true` |
 | `time`     | time of day, without time zone                  |
 | `binary`   | byte string                                     |
 | `uuid`     | 128-bit UUID                                    |
@@ -568,9 +611,15 @@ timestamps
 | `limit:`     | integer, 1 to 4294967295             | `string` only   | none    |
 | `precision:` | integer, 1 to 255                    | `decimal` only  | none    |
 | `scale:`     | integer, 0 to `precision`            | `decimal` only, needs `precision:` | none |
+| `time_zone:` | `true` or `false`                    | `datetime` only | `false` |
 
 For example `limit: 10` on an `integer` column is an error, and so is
 `scale: 2` without `precision:`.
+
+`time_zone: true` makes a `datetime` a point in time rather than a
+wall-clock reading: the database converts it to and from the session's
+time zone (PostgreSQL's `timestamptz`). Many teams use it for every
+timestamp.
 
 ## References
 
@@ -687,7 +736,7 @@ A literal is stored as-is. Its kind must fit the column type:
 |--------------------------------|----------------------------------------|
 | `string`, `text`               | string                                 |
 | `integer`, `bigint`            | integer                                |
-| `float`, `decimal`             | integer (the language has no fractional literals yet) |
+| `float`, `decimal`             | integer or decimal (`0.5`)             |
 | `boolean`                      | `true`, `false`                        |
 | `date`, `datetime`, `time`     | string in ISO 8601 form (`"2026-01-01"`, `"2026-01-01 12:00:00"`, `"12:00:00"`) |
 | `uuid`                         | string                                 |
@@ -705,15 +754,14 @@ A literal is stored as-is. Its kind must fit the column type:
 A named default is a symbol the database evaluates at insert time. Each
 dialect translates it to its own SQL, so the file stays portable.
 
-| Name   | Meaning      | Allowed on                 | PostgreSQL          |
-|--------|--------------|----------------------------|---------------------|
-| `:now` | current time | `datetime`, `date`, `time` | `CURRENT_TIMESTAMP` |
+| Name    | Meaning         | Allowed on                 | PostgreSQL          |
+|---------|-----------------|----------------------------|---------------------|
+| `:now`  | current time    | `datetime`, `date`, `time` | `CURRENT_TIMESTAMP` |
+| `:uuid` | a random UUID   | `uuid`                     | `gen_random_uuid()` (PostgreSQL 13 or later) |
 
 - Any other symbol is an error: `unknown default ':today'`.
 - A known name on a type it does not allow is an error:
   `default ':now' is not allowed on integer column 'role'`.
-
-More names (e.g. `:uuid`) can be added later by extending this table.
 
 [`change_column_default`](#change_column_default) changes an existing
 column's default to a literal or a named one. Defaults written in SQL are
@@ -742,7 +790,7 @@ everything needed to undo it:
 | `change_column_null :t, :c, true`    | `change_column_null :t, :c, false`       |
 | `change_column_default :t, :c, from: a, to: b` | `change_column_default :t, :c, from: b, to: a` |
 | `change_column_default :t, :c, to: b` | **irreversible**                        |
-| `add_index :t, :c, opts`             | `remove_index :t, :c, opts`              |
+| `add_index :t, :c, opts`             | `remove_index :t, :c, opts` (the same columns, `where:` and `algorithm:`) |
 | `remove_index :t, :c, opts`          | `add_index :t, :c, opts`                 |
 | `remove_index :t, name: "n"`         | **irreversible**                         |
 | `rename_index :t, "a", "b"`          | `rename_index :t, "b", "a"`              |
@@ -778,10 +826,11 @@ migration CreateUsersProfile {
       string :email, null: false, limit: 255
       integer :role, null: false, default: 0
       boolean :active, default: true
-      decimal :balance, precision: 10, scale: 2, default: 0
+      decimal :balance, precision: 10, scale: 2, default: 0.50
+      uuid :api_key, null: false, default: :uuid
       json :settings, default: "{}"
-      datetime :confirmed_at, default: :now
-      timestamps
+      datetime :confirmed_at, time_zone: true, default: :now
+      timestamps time_zone: true
     }
     add_index :users_profile, :email, unique: true
   }
@@ -799,10 +848,11 @@ What each line lowers to:
 | `string :email, null: false, limit: 255` | column `email`, `string`, not null, limit 255 |
 | `integer :role, null: false, default: 0` | column `role`, `integer`, not null, literal default `0` |
 | `boolean :active, default: true` | column `active`, `boolean`, nullable, literal default `true` |
-| `decimal :balance, precision: 10, scale: 2, default: 0` | column `balance`, `decimal(10, 2)`, nullable, literal default `0` |
+| `decimal :balance, precision: 10, scale: 2, default: 0.50` | column `balance`, `decimal(10, 2)`, nullable, literal default `0.50` |
+| `uuid :api_key, null: false, default: :uuid` | column `api_key`, `uuid`, not null, named default `uuid` (a new random UUID per row) |
 | `json :settings, default: "{}"` | column `settings`, `json`, nullable, literal default `"{}"` |
-| `datetime :confirmed_at, default: :now` | column `confirmed_at`, `datetime`, nullable, named default `now` |
-| `timestamps` | columns `created_at` and `updated_at`, `datetime`, not null, no default |
+| `datetime :confirmed_at, time_zone: true, default: :now` | column `confirmed_at`, `datetime` with time zone, nullable, named default `now` |
+| `timestamps time_zone: true` | columns `created_at` and `updated_at`, `datetime` with time zone, not null, no default |
 | `add_index :users_profile, :email, unique: true` | unique index `index_users_profile_on_email` on `users_profile(email)` |
 
 The derived `down` is the inverse of each operation in reverse order:
@@ -868,5 +918,16 @@ Each of these is rejected; the message is what `ffmig check` reports.
 | `migration M, lock: true { change { } }` (whole file) | `unknown option 'lock' for migration` |
 | `migration M, :fast { change { } }` (whole file)    | `migration takes only options, such as 'transaction: false'` |
 | `migration M transaction: false { change { } }` (whole file) | syntax error: expected `,` after migration name |
-| `add_index :t, [:a, :b]`                            | syntax error: `[` is reserved |
+| `add_index :t, []`                                  | syntax error: expected a value after `[` |
+| `add_index :t, [:a, :a]`                            | `column 'a' listed twice in the index` |
+| `add_column :t, [:a, :b], :string`                  | `add_column expects :column to be a symbol, found a list` |
+| `add_index :t, :c, algorithm: :concurrently` (in a migration with a transaction) | `a concurrent index needs 'transaction: false' on the migration` |
+| `add_index :t, :c, algorithm: :online`              | `'algorithm:' must be :concurrently` |
+| `add_index :t, :c, where: " "`                      | `'where:' has no condition` |
+| `add_index :t, :c, where: :active`                  | `'where:' must be a string` |
+| `add_index :t, [:a, :b, ...]` with a default name over 63 bytes | `index name '...' is longer than 63 bytes; give the index a shorter 'name:'` |
+| `add_column :t, :c, :string, time_zone: true`       | `'time_zone:' is only allowed on datetime columns` |
+| `add_column :t, :c, :integer, default: 0.5`         | `decimal default is not allowed on integer column 'c'` |
+| `add_column :t, :c, :string, default: :uuid`        | `default ':uuid' is not allowed on string column 'c'` |
+| `add_column :t, :c, :float, default: 1.`            | syntax error: `invalid number '1.'` |
 | `migration M { }`                                   | syntax error: expected `change`, `up` or `down` |

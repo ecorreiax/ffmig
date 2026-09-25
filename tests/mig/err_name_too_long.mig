@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_column :t, :a_column_name_that_is_much_too_long_for_postgresql_to_keep_whole, :string
+  }
+}

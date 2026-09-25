@@ -18,8 +18,8 @@ pub const Error = error{ InvalidMigration, OutOfMemory };
 /// names are slices of the source `file` was parsed from.
 pub fn lower(arena: Allocator, file: syntax.File, diag: *Diagnostic) Error!ast.Migration {
     var l: Lowerer = .{ .arena = arena, .diag = diag };
-    const transaction = try l.lowerTransaction(file);
-    return .{ .name = file.name, .transaction = transaction, .body = try l.lowerBody(file.sections) };
+    l.transaction = try l.lowerTransaction(file);
+    return .{ .name = file.name, .transaction = l.transaction, .body = try l.lowerBody(file.sections) };
 }
 
 /// The operations a section may hold. `add_reference` and
@@ -46,15 +46,17 @@ const OpName = enum {
 };
 
 const migration_options = [_][]const u8{"transaction"};
-const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale" };
-const index_options = [_][]const u8{ "unique", "name" };
+const column_options = [_][]const u8{ "null", "default", "limit", "precision", "scale", "time_zone" };
+const index_options = [_][]const u8{ "unique", "name", "where", "algorithm" };
 const reference_options = [_][]const u8{ "type", "to", "null", "foreign_key", "index", "on_delete" };
 const foreign_key_options = [_][]const u8{ "column", "on_delete", "name" };
-const change_column_options = [_][]const u8{ "limit", "precision", "scale", "from", "from_limit", "from_precision", "from_scale" };
+const change_column_options = [_][]const u8{ "limit", "precision", "scale", "time_zone", "from", "from_limit", "from_precision", "from_scale", "from_time_zone" };
 
 const Lowerer = struct {
     arena: Allocator,
     diag: *Diagnostic,
+    /// The migration's `transaction:`, read before its body.
+    transaction: bool = true,
 
     /// The options after the migration name: only `transaction:`.
     fn lowerTransaction(l: *Lowerer, file: syntax.File) Error!bool {
@@ -201,7 +203,7 @@ const Lowerer = struct {
         try l.expectNoBlock(call);
         const to = try l.lowerSizedType(column_type, call.options, "");
         const opt = findOption(call.options, "from") orelse {
-            for ([_][]const u8{ "from_limit", "from_precision", "from_scale" }) |key| {
+            for ([_][]const u8{ "from_limit", "from_precision", "from_scale", "from_time_zone" }) |key| {
                 if (findOption(call.options, key)) |o| return l.fail(labelSpan(o), "'{s}:' needs 'from:'", .{key});
             }
             return .{ .table = table, .column = column, .to = to, .from = null };
@@ -253,33 +255,95 @@ const Lowerer = struct {
     fn lowerAddIndex(l: *Lowerer, call: syntax.Call) Error!ast.AddIndex {
         try l.expectArgCount(call, 2, 2, ":table, :column");
         const table = try l.expectSymbol(call, 0, ":table");
-        const column = try l.expectSymbol(call, 1, ":column");
-        try l.checkOptions(call, &index_options);
-        try l.expectNoBlock(call);
+        const columns = try l.expectIndexColumns(call, 1);
+        const index = try l.lowerIndexOptions(call, table, columns);
         return .{
             .table = table,
-            .column = column,
-            .unique = try l.optionBool(call.options, "unique") orelse false,
-            .name = try l.optionString(call.options, "name"),
+            .columns = columns,
+            .unique = index.unique,
+            .name = index.name,
+            .where = index.where,
+            .algorithm = index.algorithm,
         };
     }
 
     fn lowerRemoveIndex(l: *Lowerer, call: syntax.Call) Error!ast.RemoveIndex {
         try l.expectArgCount(call, 1, 2, ":table [, :column]");
         const table = try l.expectSymbol(call, 0, ":table");
-        const column = if (call.args.len == 2) try l.expectSymbol(call, 1, ":column") else null;
-        try l.checkOptions(call, &index_options);
-        try l.expectNoBlock(call);
-        const name = try l.optionString(call.options, "name");
-        if (column == null and name == null) {
+        const columns = if (call.args.len == 2) try l.expectIndexColumns(call, 1) else null;
+        const index = try l.lowerIndexOptions(call, table, columns);
+        if (columns == null and index.name == null) {
             return l.fail(call.name_span, "remove_index needs a column or 'name:'", .{});
         }
         return .{
             .table = table,
-            .column = column,
+            .columns = columns,
+            .unique = index.unique,
+            .name = index.name,
+            .where = index.where,
+            .algorithm = index.algorithm,
+        };
+    }
+
+    const IndexOptions = struct {
+        unique: bool,
+        name: ?[]const u8,
+        where: ?[]const u8,
+        algorithm: ?ast.IndexAlgorithm,
+    };
+
+    /// The options that `add_index` and `remove_index` share. Checks that
+    /// the index's name, given or default, fits, and that a concurrent
+    /// index is in a migration without a transaction.
+    fn lowerIndexOptions(l: *Lowerer, call: syntax.Call, table: []const u8, columns: ?[]const []const u8) Error!IndexOptions {
+        try l.checkOptions(call, &index_options);
+        try l.expectNoBlock(call);
+        const name = try l.optionName(call.options, "name");
+        if (name == null) if (columns) |cols| {
+            const default = try std.mem.concat(l.arena, u8, &.{ "index_", table, "_on_", try std.mem.join(l.arena, "_and_", cols) });
+            if (default.len > ast.max_name_length) {
+                return l.fail(call.name_span, "index name '{s}' is longer than {d} bytes; give the index a shorter 'name:'", .{ default, ast.max_name_length });
+            }
+        };
+        var where: ?[]const u8 = null;
+        if (findOption(call.options, "where")) |opt| {
+            const text = try l.optionString(call.options, "where") orelse unreachable;
+            if (std.mem.indexOfNone(u8, text, " \t\r\n") == null) return l.fail(opt.value.span, "'where:' has no condition", .{});
+            where = text;
+        }
+        const algorithm = try l.optionAlgorithm(call.options);
+        if (algorithm != null and l.transaction) {
+            const opt = findOption(call.options, "algorithm").?;
+            return l.fail(labelSpan(opt), "a concurrent index needs 'transaction: false' on the migration", .{});
+        }
+        return .{
             .unique = try l.optionBool(call.options, "unique") orelse false,
             .name = name,
+            .where = where,
+            .algorithm = algorithm,
         };
+    }
+
+    /// Positional argument `index` of `add_index` or `remove_index`: a
+    /// column, or a list of distinct columns.
+    fn expectIndexColumns(l: *Lowerer, call: syntax.Call, index: usize) Error![]const []const u8 {
+        const value = call.args[index];
+        const items: []const syntax.Value = switch (value.kind) {
+            .list => |items| items,
+            .symbol => (&call.args[index])[0..1],
+            else => return l.fail(value.span, "{s} expects :column to be a symbol or a list of symbols, found {s}", .{ call.name, describe(value) }),
+        };
+        const columns = try l.arena.alloc([]const u8, items.len);
+        for (items, columns, 0..) |item, *c, i| {
+            c.* = switch (item.kind) {
+                .symbol => |sym| try l.checkName(item.span, sym),
+                else => return l.fail(item.span, "{s} expects the columns to be symbols, found {s}", .{ call.name, describe(item) }),
+            };
+            for (columns[0..i]) |other| if (std.mem.eql(u8, other, c.*)) {
+                return l.fail(item.span, "column '{s}' listed twice in the index", .{c.*});
+            };
+        }
+        return columns;
     }
 
     /// `rename_index :table, "from", "to"`. PostgreSQL does not need the
@@ -287,8 +351,8 @@ const Lowerer = struct {
     fn lowerRenameIndex(l: *Lowerer, call: syntax.Call) Error!ast.RenameIndex {
         try l.expectArgCount(call, 3, 3, ":table, \"from\", \"to\"");
         const table = try l.expectSymbol(call, 0, ":table");
-        const from = try l.expectString(call, 1, "\"from\"");
-        const to = try l.expectString(call, 2, "\"to\"");
+        const from = try l.checkName(call.args[1].span, try l.expectString(call, 1, "\"from\""));
+        const to = try l.checkName(call.args[2].span, try l.expectString(call, 2, "\"to\""));
         try l.checkOptions(call, &.{});
         try l.expectNoBlock(call);
         return .{ .table = table, .from = from, .to = to };
@@ -300,12 +364,15 @@ const Lowerer = struct {
         const to_table = try l.expectSymbol(call, 1, ":to_table");
         try l.checkOptions(call, &foreign_key_options);
         try l.expectNoBlock(call);
+        const column = try l.optionSymbol(call.options, "column") orelse
+            return l.fail(call.name_span, "add_foreign_key needs 'column:'", .{});
+        const name = try l.optionName(call.options, "name");
+        if (name == null) try l.checkForeignKeyName(call.name_span, table, column, "give the foreign key a shorter 'name:'");
         return .{
             .table = table,
-            .column = try l.optionSymbol(call.options, "column") orelse
-                return l.fail(call.name_span, "add_foreign_key needs 'column:'", .{}),
+            .column = column,
             .foreign_key = .{ .table = to_table, .on_delete = try l.optionOnDelete(call.options) },
-            .name = try l.optionString(call.options, "name"),
+            .name = name,
         };
     }
 
@@ -316,10 +383,11 @@ const Lowerer = struct {
         try l.checkOptions(call, &foreign_key_options);
         try l.expectNoBlock(call);
         const column = try l.optionSymbol(call.options, "column");
-        const name = try l.optionString(call.options, "name");
+        const name = try l.optionName(call.options, "name");
         if (column == null and name == null) {
             return l.fail(call.name_span, "remove_foreign_key needs 'column:' or 'name:'", .{});
         }
+        if (name == null) try l.checkForeignKeyName(call.name_span, table, column.?, "give the foreign key a shorter 'name:'");
         return .{
             .table = table,
             .to_table = to_table,
@@ -356,7 +424,7 @@ const Lowerer = struct {
         const name = try l.expectSymbol(call, 1, ":name");
         try l.checkOptions(call, &reference_options);
         try l.expectNoBlock(call);
-        return .{ table, try l.lowerReference(name, call.args[1].span, call.options, call.span) };
+        return .{ table, try l.lowerReference(table, name, call.args[1].span, call.options, call.span) };
     }
 
     /// The statements of a `create_table` / `drop_table` block: `<type> :name, opts`,
@@ -365,12 +433,12 @@ const Lowerer = struct {
         var columns: std.ArrayList(ast.Column) = .empty;
         for (calls) |call| {
             if (std.mem.eql(u8, call.name, "timestamps")) {
-                if (call.args.len > 0 or call.options.len > 0) {
-                    return l.fail(call.name_span, "timestamps takes no arguments", .{});
-                }
+                if (call.args.len > 0) return l.fail(call.name_span, "timestamps takes no positional arguments", .{});
+                try l.checkOptions(call, &.{"time_zone"});
                 try l.expectNoBlock(call);
+                const time_zone = try l.optionBool(call.options, "time_zone") orelse false;
                 for ([_][]const u8{ "created_at", "updated_at" }) |name| {
-                    const column: ast.Column = .{ .name = name, .type = .datetime, .null = false, .span = call.span };
+                    const column: ast.Column = .{ .name = name, .type = .datetime, .null = false, .time_zone = time_zone, .span = call.span };
                     try l.appendColumn(&columns, table, id, column, call.name_span);
                 }
                 continue;
@@ -381,7 +449,7 @@ const Lowerer = struct {
                 const name = try l.expectSymbol(call, 0, ":name");
                 try l.checkOptions(call, &reference_options);
                 try l.expectNoBlock(call);
-                const column = try l.lowerReference(name, call.args[0].span, call.options, call.span);
+                const column = try l.lowerReference(table, name, call.args[0].span, call.options, call.span);
                 try l.appendColumn(&columns, table, id, column, call.args[0].span);
                 continue;
             }
@@ -433,6 +501,7 @@ const Lowerer = struct {
             .limit = sized.limit,
             .precision = sized.precision,
             .scale = sized.scale,
+            .time_zone = sized.time_zone,
             .span = span,
         };
         if (try l.optionBool(options, "null")) |n| column.null = n;
@@ -441,7 +510,8 @@ const Lowerer = struct {
     }
 
     /// `column_type` with the size options `limit:`, `precision:` and
-    /// `scale:`, each spelled with `prefix` in front (`from_limit:`).
+    /// `scale:`, and `time_zone:`, each spelled with `prefix` in front
+    /// (`from_limit:`).
     fn lowerSizedType(
         l: *Lowerer,
         column_type: ast.ColumnType,
@@ -462,13 +532,19 @@ const Lowerer = struct {
             const precision = sized.precision orelse return l.fail(labelSpan(opt), "'" ++ prefix ++ "scale:' needs '" ++ prefix ++ "precision:'", .{});
             sized.scale = try l.integer(opt, u8, 0, precision);
         }
+        if (findOption(options, prefix ++ "time_zone")) |opt| {
+            if (column_type != .datetime) return l.fail(labelSpan(opt), "'" ++ prefix ++ "time_zone:' is only allowed on datetime columns", .{});
+            sized.time_zone = try l.optionBool(options, prefix ++ "time_zone") orelse unreachable;
+        }
         return sized;
     }
 
-    /// The `<name>_id` column of a reference, from reference options already
-    /// checked for unknown and duplicate keys. `name_span` is where `name` is.
+    /// The `<name>_id` column of a reference in `table`, from reference
+    /// options already checked for unknown and duplicate keys. `name_span`
+    /// is where `name` is.
     fn lowerReference(
         l: *Lowerer,
+        table: []const u8,
         name: []const u8,
         name_span: Span,
         options: []const syntax.Option,
@@ -478,7 +554,7 @@ const Lowerer = struct {
             return l.fail(name_span, "reference ':{s}' already ends in '_id'; write ':{s}'", .{ name, name[0 .. name.len - "_id".len] });
         }
         var column: ast.Column = .{
-            .name = try std.mem.concat(l.arena, u8, &.{ name, "_id" }),
+            .name = try l.checkName(name_span, try std.mem.concat(l.arena, u8, &.{ name, "_id" })),
             .type = try l.optionReferenceType(options),
             .span = span,
         };
@@ -501,9 +577,16 @@ const Lowerer = struct {
                 const opt = findOption(options, "on_delete").?;
                 return l.fail(opt.value.span, "on_delete: :nullify on non-null column '{s}'", .{column.name});
             }
+            try l.checkForeignKeyName(name_span, table, column.name, "write the reference with 'foreign_key: false' and add_foreign_key with a 'name:'");
             reference.foreign_key = foreign_key;
         } else for ([_][]const u8{ "to", "on_delete" }) |key| {
             if (findOption(options, key)) |opt| return l.fail(labelSpan(opt), "'{s}:' needs a foreign key", .{key});
+        }
+        if (reference.index != .none) {
+            const index = try std.mem.concat(l.arena, u8, &.{ "index_", table, "_on_", column.name });
+            if (index.len > ast.max_name_length) {
+                return l.fail(name_span, "index name '{s}' is longer than {d} bytes; write the reference with 'index: false' and add_index with a 'name:'", .{ index, ast.max_name_length });
+            }
         }
         column.reference = reference;
         return column;
@@ -519,7 +602,9 @@ const Lowerer = struct {
             .nil => .{ .literal = .nil },
             .string => |s| .{ .literal = .{ .string = s } },
             .integer => |i| .{ .literal = .{ .integer = i } },
+            .decimal => |d| .{ .literal = .{ .decimal = d } },
             .boolean => |b| .{ .literal = .{ .boolean = b } },
+            .list => l.fail(value.span, "a default cannot be a list", .{}),
         };
     }
 
@@ -540,7 +625,9 @@ const Lowerer = struct {
             },
             .string => |s| .{ .string = s },
             .integer => |i| .{ .integer = i },
+            .decimal => |d| .{ .decimal = d },
             .boolean => |b| .{ .boolean = b },
+            .list => return l.fail(value.span, "a default cannot be a list", .{}),
         };
         const allowed = switch (literal) {
             .string => switch (column.type) {
@@ -551,6 +638,7 @@ const Lowerer = struct {
                 .integer, .bigint, .float, .decimal => true,
                 else => false,
             },
+            .decimal => column.type == .float or column.type == .decimal,
             .boolean => column.type == .boolean,
             .nil => unreachable,
         };
@@ -570,14 +658,30 @@ const Lowerer = struct {
         return l.fail(call.name_span, "{s} expects {d} or {d} arguments (" ++ usage ++ "), got {d}", .{ call.name, min, max, got });
     }
 
-    /// Positional argument `index`, which must exist, as a symbol. `what`
-    /// names it in the error, e.g. `:table`.
+    /// Positional argument `index`, which must exist, as a symbol, which
+    /// names a table or column. `what` names it in the error, e.g.
+    /// `:table`.
     fn expectSymbol(l: *Lowerer, call: syntax.Call, index: usize, comptime what: []const u8) Error![]const u8 {
         const value = call.args[index];
         return switch (value.kind) {
-            .symbol => |s| s,
+            .symbol => |s| l.checkName(value.span, s),
             else => l.fail(value.span, "{s} expects " ++ what ++ " to be a symbol, found {s}", .{ call.name, describe(value) }),
         };
+    }
+
+    /// `name`, a name the database will hold, if it fits
+    /// `ast.max_name_length`. `span` is where it is written.
+    fn checkName(l: *Lowerer, span: Span, name: []const u8) Error![]const u8 {
+        if (name.len <= ast.max_name_length) return name;
+        return l.fail(span, "name '{s}' is longer than {d} bytes", .{ name, ast.max_name_length });
+    }
+
+    /// Checks that the default name of the foreign key on `column` of
+    /// `table` fits, suggesting `fix` when it does not.
+    fn checkForeignKeyName(l: *Lowerer, span: Span, table: []const u8, column: []const u8, comptime fix: []const u8) Error!void {
+        const name = try std.mem.concat(l.arena, u8, &.{ "fk_", table, "_on_", column });
+        if (name.len <= ast.max_name_length) return;
+        return l.fail(span, "foreign key name '{s}' is longer than {d} bytes; " ++ fix, .{ name, ast.max_name_length });
     }
 
     /// Positional argument `index`, which must exist, as a string.
@@ -695,6 +799,21 @@ const Lowerer = struct {
         };
     }
 
+    /// A string option that names an index or foreign key.
+    fn optionName(l: *Lowerer, options: []const syntax.Option, key: []const u8) Error!?[]const u8 {
+        const name = try l.optionString(options, key) orelse return null;
+        return try l.checkName(findOption(options, key).?.value.span, name);
+    }
+
+    /// An index's `algorithm:`, a symbol naming an `ast.IndexAlgorithm`.
+    fn optionAlgorithm(l: *Lowerer, options: []const syntax.Option) Error!?ast.IndexAlgorithm {
+        const opt = findOption(options, "algorithm") orelse return null;
+        return switch (opt.value.kind) {
+            .symbol => |s| std.meta.stringToEnum(ast.IndexAlgorithm, s),
+            else => null,
+        } orelse l.fail(opt.value.span, "'algorithm:' must be :concurrently", .{});
+    }
+
     fn integer(l: *Lowerer, opt: syntax.Option, comptime T: type, min: T, max: T) Error!T {
         switch (opt.value.kind) {
             .integer => |i| if (i >= min and i <= max) return @intCast(i),
@@ -739,7 +858,9 @@ fn describe(value: syntax.Value) []const u8 {
         .symbol => "a symbol",
         .string => "a string",
         .integer => "an integer",
+        .decimal => "a decimal",
         .boolean => "a boolean",
         .nil => "nil",
+        .list => "a list",
     };
 }

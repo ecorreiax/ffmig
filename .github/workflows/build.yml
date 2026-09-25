@@ -1,0 +1,130 @@
+# Builds the release binaries on every platform, checks each one against a
+# PostgreSQL server that accepts only TLS (scripts/smoke.sh), and uploads
+# them as artifacts named as the release assets are. CI runs it on every
+# push and pull request, and the release workflow publishes what it builds.
+#
+# libpq is linked dynamically (see "Install" in README.md): each binary
+# uses the libpq of the machine it runs on, Homebrew's on macOS, the
+# distribution's libpq5 on Linux, and the DLLs shipped next to it on
+# Windows.
+name: Build
+
+on:
+  workflow_call:
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  unix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.28 and later: Debian 10, Ubuntu 20.04, RHEL 8.
+          - { name: linux-amd64, runner: ubuntu-24.04, target: x86_64-linux-gnu.2.28 }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, target: aarch64-linux-gnu.2.28 }
+          # macOS 13 and later.
+          - { name: macos-arm64, runner: macos-15, target: aarch64-macos.13.0 }
+          - { name: macos-amd64, runner: macos-15-intel, target: x86_64-macos.13.0 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Install libpq, and PostgreSQL for the smoke test
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y libpq5 postgresql
+            echo "LIBPQ=$(ls /usr/lib/*-linux-gnu/libpq.so.5)" >>"$GITHUB_ENV"
+            echo "PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -n 1)" >>"$GITHUB_ENV"
+          else
+            brew install libpq postgresql@17
+            echo "LIBPQ=$(brew --prefix libpq)/lib/libpq.5.dylib" >>"$GITHUB_ENV"
+            echo "PG_BIN=$(brew --prefix postgresql@17)/bin" >>"$GITHUB_ENV"
+          fi
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }} -Dlibpq="$LIBPQ" -p out
+      - name: Show the libraries it loads
+        run: if [ "$RUNNER_OS" = Linux ]; then ldd out/bin/ffmig; else otool -L out/bin/ffmig; fi
+      - name: Smoke test
+        run: scripts/smoke.sh out/bin/ffmig
+      - name: Package
+        run: |
+          mkdir dist
+          if [ "$RUNNER_OS" = Linux ]; then
+            # A bare binary, which the README's curl command installs.
+            cp out/bin/ffmig dist/ffmig-${{ matrix.name }}
+          else
+            # For the Homebrew formula.
+            mkdir stage
+            cp out/bin/ffmig LICENSE README.md stage/
+            tar -czf dist/ffmig-${{ matrix.name }}.tar.gz -C stage ffmig LICENSE README.md
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmig-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: windows-amd64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      # MSYS2's libpq, its DLLs, and PostgreSQL and openssl for the smoke
+      # test.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: >-
+            zip
+            mingw-w64-ucrt-x86_64-postgresql
+            mingw-w64-ucrt-x86_64-openssl
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dlibpq="$(cygpath -m /ucrt64/lib/libpq.dll.a)" -p out
+      - name: Bundle the DLLs it loads
+        run: |
+          mkdir -p dist/ffmig
+          cp out/bin/ffmig.exe LICENSE README.md dist/ffmig/
+          ldd out/bin/ffmig.exe
+          ldd out/bin/ffmig.exe | awk '$3 ~ /^\/ucrt64\// { print $3 }' | xargs -r cp -t dist/ffmig/
+          ls dist/ffmig
+      - name: Check that it runs outside MSYS2
+        shell: pwsh
+        run: .\dist\ffmig\ffmig.exe --version
+      - name: Smoke test
+        run: scripts/smoke.sh dist/ffmig/ffmig.exe
+      - name: Package
+        run: (cd dist/ffmig && zip -9 ../ffmig-windows-amd64.zip *)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmig-windows-amd64
+          path: dist/ffmig-windows-amd64.zip
+          if-no-files-found: error
+
+  docker:
+    name: docker
+    needs: unix
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmig-linux-*
+          merge-multiple: true
+          path: packaging/docker
+      - name: Build the image
+        run: docker build -t ffmig:test packaging/docker
+      - name: Run it
+        run: docker run --rm ffmig:test --version

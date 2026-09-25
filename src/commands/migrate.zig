@@ -27,6 +27,7 @@ const Writer = std.Io.Writer;
 const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
 const flags = @import("flags.zig");
+const dump = @import("dump.zig");
 const mig = @import("../mig/root.zig");
 
 pub const usage =
@@ -73,7 +74,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
     var project = try migrations.Project.load(env, arena, err) orelse return 1;
     defer project.close(env.io);
-    const conn = try migrations.connect(env, arena, project.url, err) orelse return 1;
+    const conn = try project.connect(env, arena, err) orelse return 1;
     defer conn.db.close();
     return migrate(env, arena, project, conn, options, out, err);
 }
@@ -172,6 +173,7 @@ pub fn migrate(
         if (!try migrations.apply(arena, conn, p.path, ops, p.insert(), transaction, err)) return 1;
         try out.print("{s} {s}\n", .{ if (options.fake) "Recorded (not run)" else "Migrated", p.path });
     }
+    if (!options.dry_run and !try dump.after(env, arena, project, conn, out, err)) return 1;
     return 0;
 }
 

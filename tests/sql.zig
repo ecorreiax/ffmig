@@ -40,7 +40,7 @@ test "postgres quotes every identifier, including reserved words" {
 
 test "postgres doubles quotes in identifiers and default index names" {
     const op: ast.Operation = .{ .span = .{ .start = 0, .end = 0 }, .kind = .{
-        .add_index = .{ .table = "we\"ird", .column = "\"", .unique = true },
+        .add_index = .{ .table = "we\"ird", .columns = &.{"\""}, .unique = true },
     } };
     var actual: Writer.Allocating = .init(testing.allocator);
     defer actual.deinit();

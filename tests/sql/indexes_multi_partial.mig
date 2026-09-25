@@ -1,0 +1,7 @@
+migration M {
+  change {
+    add_index :events, [:user_id, :created_at]
+    add_index :users, [:org_id, :email], unique: true, where: "deleted_at IS NULL"
+    remove_index :users, [:a, :b], name: "users_a_b"
+  }
+}

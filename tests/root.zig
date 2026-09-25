@@ -27,4 +27,5 @@ test {
     _ = @import("docs.zig");
     _ = @import("migrate.zig");
     _ = @import("database.zig");
+    _ = @import("pg_dump.zig");
 }

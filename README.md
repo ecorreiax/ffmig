@@ -13,12 +13,14 @@ Migrations are written in [.mig](MIG.md), a small database-neutral language with
 **macOS** (Homebrew):
 
 ```sh
+brew tap ecorreiax/tap
 brew install ffmig
 ```
 
-**Linux:**
+**Linux** (`ffmig-linux-amd64`, or `ffmig-linux-arm64` on ARM). FFMig uses libpq, PostgreSQL's client library, which the first line installs:
 
 ```sh
+sudo apt-get install -y libpq5    # Debian, Ubuntu; on Fedora and RHEL: sudo dnf install -y libpq
 sudo curl -fsSL -o /usr/local/bin/ffmig https://github.com/ecorreiax/ffmig/releases/latest/download/ffmig-linux-amd64
 sudo chmod +x /usr/local/bin/ffmig
 ```
@@ -26,6 +28,7 @@ sudo chmod +x /usr/local/bin/ffmig
 **Windows** (Scoop):
 
 ```sh
+scoop bucket add ecorreiax https://github.com/ecorreiax/scoop-bucket
 scoop install ffmig
 ```
 
@@ -35,12 +38,16 @@ scoop install ffmig
 docker run --rm -it --network=host ghcr.io/ecorreiax/ffmig --help
 ```
 
+To run it on a project, mount the project directory: `docker run --rm --network=host -v "$PWD:/app" -e DATABASE_URL ghcr.io/ecorreiax/ffmig migrate`.
+
 Check it runs:
 
 ```sh
 $ ffmig --version
 ffmig 0.1.0
 ```
+
+FFMig works with PostgreSQL 13 or later, and connects with TLS whenever the database URL asks for it (`?sslmode=require`), as managed databases do. If it fails to start with `libpq.so.5: cannot open shared object file` or `Library not loaded: libpq.5.dylib`, libpq is missing: install it as above, or with `brew install libpq` on macOS.
 
 ### Set up a project
 
@@ -129,6 +136,8 @@ migrate         # Apply every pending migration
 rollback        # Undo the last applied migration
 redo            # Undo the last applied migration and apply it again
 status          # List migrations as up or down, with when each ran
+dump            # Write the database schema to schema.sql
+load            # Create the schema from schema.sql in an empty database
 help            # Show this message, or a command's flags
 version         # Print the version
 ```
@@ -152,7 +161,30 @@ version         # Print the version
 - `--step <n>`: Act on the last `n` migrations instead of one
 - `--lock-wait <s>`: Wait up to `s` seconds for another run to finish (default: 60; 0: do not wait)
 
-A migration that needs statements which cannot run in a transaction, such as `CREATE INDEX CONCURRENTLY`, declares `transaction: false`; its statements then run one at a time. See [MIG.md](MIG.md).
+#### Load
+- `--force`: Load even if the database already records applied migrations
+
+A migration that needs statements which cannot run in a transaction, such as `add_index ..., algorithm: :concurrently`, declares `transaction: false`; its statements then run one at a time. See [MIG.md](MIG.md).
+
+### Schema dump
+
+`ffmig dump` writes the database's schema to `schema.sql`, as `pg_dump --schema-only` prints it, followed by the migrations it has applied. Committing it makes each pull request show what a migration really changed:
+
+```sh
+$ ffmig dump
+Dumped the schema to schema.sql
+```
+
+`ffmig load` creates that schema in an empty database, with its migrations recorded as applied, which is faster than replaying every migration for a new development or test database:
+
+```sh
+$ ffmig create
+Created database app_test
+$ ffmig load
+Loaded the schema from schema.sql
+```
+
+FFMig removes from the file what changes from one run or one `pg_dump` version to the next (its version numbers, settings and random keys), so dumping the same schema twice gives the same file. `dump` runs `pg_dump`, which comes with the PostgreSQL client tools (not with FFMig, nor in its Docker image) and must be the same major version as the server or newer.
 
 ## Configuration
 
@@ -181,6 +213,27 @@ statement_timeout = "30s"   # Fail a statement that runs longer than this
 The timeouts take a whole number followed by `ms`, `s`, `min` or `h`, such as `"500ms"`, `"5s"` or `"2min"`, or `"0"` for no limit. When one is unset, the server's own setting applies. They apply to `migrate`, `rollback` and `redo`.
 
 Setting `lock_timeout` is worth it in production: a migration stuck behind a long query's lock otherwise makes every query after it wait too. With a timeout, the migration fails, is undone, and stays pending to run again later.
+
+To keep the tables in a PostgreSQL schema other than the default one, name it in `[database]`:
+
+```toml
+[database]
+url = "${DATABASE_URL}"
+schema = "billing"
+```
+
+Every command that connects then works in that schema only: migrations create their tables there, and `schema_migrations` lives there too. The `.mig` files stay the same. FFMig does not create the schema; create it once with `CREATE SCHEMA billing`. `dump` then dumps only that schema.
+
+`[dump]` configures `dump` and `load`, and is optional:
+
+```toml
+[dump]
+path = "db/schema.sql"    # Where dump writes and load reads (default: schema.sql)
+pg_dump = "/opt/homebrew/opt/postgresql@17/bin/pg_dump"   # The pg_dump to run (default: pg_dump on PATH)
+auto = true               # Dump after every migrate, rollback and redo
+```
+
+`path` is relative to the config file. With `auto = true`, a `migrate`, `rollback` or `redo` that changes the database writes the file too, so it never falls behind the migrations.
 
 ## Contributing
 

@@ -1,0 +1,7 @@
+migration M
+  change
+    create_table t id=bigint
+      column f float null default=0.5
+      column d decimal null precision=5 scale=2 default=-12.250
+      column token uuid not_null default=:uuid
+    change_column_default t f from=0.5 to=1.25

@@ -1,0 +1,8 @@
+# `algorithm: :concurrently` builds the index without blocking writes to
+# the table. PostgreSQL cannot do that inside a transaction, so the
+# migration opts out with `transaction: false`.
+migration AddSlugIndexToPosts, transaction: false {
+  change {
+    add_index :posts, :slug, unique: true, algorithm: :concurrently
+  }
+}

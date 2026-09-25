@@ -1,0 +1,5 @@
+migration M, transaction: false {
+  change {
+    add_index :t, :c, algorithm: :online
+  }
+}

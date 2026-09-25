@@ -34,10 +34,11 @@ const worked_example =
     \\      string :email, null: false, limit: 255
     \\      integer :role, null: false, default: 0
     \\      boolean :active, default: true
-    \\      decimal :balance, precision: 10, scale: 2, default: 0
+    \\      decimal :balance, precision: 10, scale: 2, default: 0.50
+    \\      uuid :api_key, null: false, default: :uuid
     \\      json :settings, default: "{}"
-    \\      datetime :confirmed_at, default: :now
-    \\      timestamps
+    \\      datetime :confirmed_at, time_zone: true, default: :now
+    \\      timestamps time_zone: true
     \\    }
     \\    add_index :users_profile, :email, unique: true
     \\  }
@@ -57,19 +58,20 @@ test "the worked example lowers" {
         .{ .name = "email", .type = .string, .null = false, .limit = 255, .span = spanOfText(src, "string :email, null: false, limit: 255") },
         .{ .name = "role", .type = .integer, .null = false, .default = .{ .literal = .{ .integer = 0 } }, .span = spanOfText(src, "integer :role, null: false, default: 0") },
         .{ .name = "active", .type = .boolean, .default = .{ .literal = .{ .boolean = true } }, .span = spanOfText(src, "boolean :active, default: true") },
-        .{ .name = "balance", .type = .decimal, .precision = 10, .scale = 2, .default = .{ .literal = .{ .integer = 0 } }, .span = spanOfText(src, "decimal :balance, precision: 10, scale: 2, default: 0") },
+        .{ .name = "balance", .type = .decimal, .precision = 10, .scale = 2, .default = .{ .literal = .{ .decimal = "0.50" } }, .span = spanOfText(src, "decimal :balance, precision: 10, scale: 2, default: 0.50") },
+        .{ .name = "api_key", .type = .uuid, .null = false, .default = .{ .named = .uuid }, .span = spanOfText(src, "uuid :api_key, null: false, default: :uuid") },
         .{ .name = "settings", .type = .json, .default = .{ .literal = .{ .string = "{}" } }, .span = spanOfText(src, "json :settings, default: \"{}\"") },
-        .{ .name = "confirmed_at", .type = .datetime, .default = .{ .named = .now }, .span = spanOfText(src, "datetime :confirmed_at, default: :now") },
-        .{ .name = "created_at", .type = .datetime, .null = false, .span = spanOfText(src, "timestamps") },
-        .{ .name = "updated_at", .type = .datetime, .null = false, .span = spanOfText(src, "timestamps") },
+        .{ .name = "confirmed_at", .type = .datetime, .time_zone = true, .default = .{ .named = .now }, .span = spanOfText(src, "datetime :confirmed_at, time_zone: true, default: :now") },
+        .{ .name = "created_at", .type = .datetime, .null = false, .time_zone = true, .span = spanOfText(src, "timestamps time_zone: true") },
+        .{ .name = "updated_at", .type = .datetime, .null = false, .time_zone = true, .span = spanOfText(src, "timestamps time_zone: true") },
     };
     var ops = [_]ast.Operation{
         .{
             .kind = .{ .create_table = .{ .table = "users_profile", .id = .uuid, .columns = &columns } },
-            .span = spanOf(src, "create_table", "timestamps\n    }"),
+            .span = spanOf(src, "create_table", "timestamps time_zone: true\n    }"),
         },
         .{
-            .kind = .{ .add_index = .{ .table = "users_profile", .column = "email", .unique = true } },
+            .kind = .{ .add_index = .{ .table = "users_profile", .columns = &.{"email"}, .unique = true } },
             .span = spanOfText(src, "add_index :users_profile, :email, unique: true"),
         },
     };
@@ -110,9 +112,9 @@ test "every operation lowers" {
     try testing.expectEqual(5, removed.limit);
 
     try testing.expectEqualDeep(ast.RenameColumn{ .table = "t", .from = "a", .to = "b" }, ops[4].kind.rename_column);
-    try testing.expectEqualDeep(ast.AddIndex{ .table = "t", .column = "c", .name = "t_c" }, ops[5].kind.add_index);
-    try testing.expectEqualDeep(ast.RemoveIndex{ .table = "t", .column = null, .name = "t_c" }, ops[6].kind.remove_index);
-    try testing.expectEqualDeep(ast.RemoveIndex{ .table = "t", .column = "c", .unique = true, .name = null }, ops[7].kind.remove_index);
+    try testing.expectEqualDeep(ast.AddIndex{ .table = "t", .columns = &.{"c"}, .name = "t_c" }, ops[5].kind.add_index);
+    try testing.expectEqualDeep(ast.RemoveIndex{ .table = "t", .columns = null, .name = "t_c" }, ops[6].kind.remove_index);
+    try testing.expectEqualDeep(ast.RemoveIndex{ .table = "t", .columns = &.{"c"}, .unique = true, .name = null }, ops[7].kind.remove_index);
     try testing.expectEqualStrings("drop_table :a", ops[0].span.slice(source));
 }
 
@@ -353,7 +355,7 @@ test "semantic errors" {
         .{ "remove_index :t, :a, :b", "remove_index expects 1 or 2 arguments (:table [, :column]), got 3", "remove_index" },
         .{ "add_column \"users\", :c, :string", "add_column expects :table to be a symbol, found a string", "\"users\"" },
         .{ "rename_column :t, :a, 5", "rename_column expects :to to be a symbol, found an integer", "5" },
-        .{ "add_index :t, nil", "add_index expects :column to be a symbol, found nil", "nil" },
+        .{ "add_index :t, nil", "add_index expects :column to be a symbol or a list of symbols, found nil", "nil" },
         .{ "add_column :t, :c, :strng", "unknown column type 'strng'", ":strng" },
         // Options.
         .{ "add_index :users, :email, uniq: true", "unknown option 'uniq' for add_index", "uniq:" },
@@ -383,8 +385,9 @@ test "semantic errors" {
         .{ "create_table :t { string \"a\" }", "string expects :name to be a symbol, found a string", "\"a\"" },
         .{ "create_table :t { string :a, uniq: true }", "unknown option 'uniq' for string", "uniq:" },
         .{ "create_table :t { string :a {} }", "string takes no block", "string" },
-        .{ "create_table :t { timestamps :x }", "timestamps takes no arguments", "timestamps" },
-        .{ "create_table :t { timestamps null: true }", "timestamps takes no arguments", "timestamps" },
+        .{ "create_table :t { timestamps :x }", "timestamps takes no positional arguments", "timestamps" },
+        .{ "create_table :t { timestamps null: true }", "unknown option 'null' for timestamps", "null:" },
+        .{ "create_table :t { timestamps time_zone: 1 }", "'time_zone:' must be true or false", "1" },
         .{ "create_table :t { timestamps {} }", "timestamps takes no block", "timestamps" },
         // Column options.
         .{ "add_column :t, :c, :string, null: nil", "'null:' must be true or false", "nil" },

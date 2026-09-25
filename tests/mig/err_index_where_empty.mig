@@ -1,0 +1,5 @@
+migration M {
+  change {
+    add_index :t, :c, where: " "
+  }
+}

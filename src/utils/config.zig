@@ -1,6 +1,6 @@
-//! Loads `ffmig.toml`. Only the subset of TOML that `ffmig init` writes is
-//! understood: `[section]` headers, `key = "string"` pairs and comments.
-//! Unknown sections and keys are ignored.
+//! Loads `ffmig.toml`. Only a subset of TOML is understood: `[section]`
+//! headers, `key = "string"` pairs, `key = true` / `false` where a switch
+//! is expected, and comments. Unknown sections and keys are ignored.
 //!
 //! ```toml
 //! [migration]
@@ -10,6 +10,12 @@
 //!
 //! [database]
 //! url = "${DATABASE_URL}"
+//! schema = "billing"       # optional; unset uses the server's search_path
+//!
+//! [dump]
+//! path = "schema.sql"      # optional; where `ffmig dump` writes
+//! pg_dump = "pg_dump"      # optional; the program `ffmig dump` runs
+//! auto = true              # optional; dump after migrate, rollback and redo
 //! ```
 
 const std = @import("std");
@@ -18,17 +24,38 @@ const Io = std.Io;
 
 pub const file_name = "ffmig.toml";
 pub const default_path = "migrations";
+pub const default_dump_path = "schema.sql";
+pub const default_pg_dump = "pg_dump";
 
 pub const Config = struct {
     /// Migrations directory, relative to the config file.
     path: []const u8,
     url: ?[]const u8,
+    /// The PostgreSQL schema that holds the tables, `schema_migrations`
+    /// included. Null, or empty in the file, for the server's search path.
+    schema: ?[]const u8 = null,
     timeouts: Timeouts = .{},
+    dump: Dump = .{},
 
     pub fn deinit(c: Config, gpa: Allocator) void {
         gpa.free(c.path);
         if (c.url) |u| gpa.free(u);
+        if (c.schema) |x| gpa.free(x);
+        if (c.dump.path) |x| gpa.free(x);
+        if (c.dump.pg_dump) |x| gpa.free(x);
     }
+};
+
+/// `[dump]`: where `ffmig dump` writes the schema, and when.
+pub const Dump = struct {
+    /// Relative to the config file. Null for `default_dump_path`.
+    path: ?[]const u8 = null,
+    /// The program to run, a name looked up in `PATH` or a path. Null for
+    /// `default_pg_dump`.
+    pg_dump: ?[]const u8 = null,
+    /// Dump after every `migrate`, `rollback` and `redo` that changes
+    /// the database.
+    auto: bool = false,
 };
 
 /// `[migration] lock_timeout` and `statement_timeout`, in milliseconds,
@@ -41,11 +68,12 @@ pub const Timeouts = struct {
 pub const Diagnostics = struct {
     /// 1-based line of the first error.
     line: usize = 0,
-    /// On `error.InvalidTimeout`, the key whose value is not a duration.
+    /// On `error.InvalidTimeout` or `error.InvalidBool`, the key whose
+    /// value is wrong.
     key: []const u8 = "",
 };
 
-pub const ParseError = error{ InvalidSyntax, InvalidTimeout, OutOfMemory };
+pub const ParseError = error{ InvalidSyntax, InvalidTimeout, InvalidBool, OutOfMemory };
 
 pub const LoadError = ParseError || Io.Dir.ReadFileAllocError;
 
@@ -62,6 +90,11 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
     errdefer if (path) |p| gpa.free(p);
     var url: ?[]const u8 = null;
     errdefer if (url) |u| gpa.free(u);
+    var schema: ?[]const u8 = null;
+    errdefer if (schema) |x| gpa.free(x);
+    var dump: Dump = .{};
+    errdefer if (dump.path) |x| gpa.free(x);
+    errdefer if (dump.pg_dump) |x| gpa.free(x);
     var timeouts: Timeouts = .{};
 
     var section: []const u8 = "";
@@ -93,10 +126,24 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
             };
             continue;
         };
+        if (eql(section, "dump") and eql(key, "auto")) {
+            const value = std.mem.trimEnd(u8, if (std.mem.indexOfScalar(u8, raw_value, '#')) |i| raw_value[0..i] else raw_value, " \t");
+            dump.auto = if (eql(value, "true")) true else if (eql(value, "false")) false else {
+                diag.key = "auto";
+                return error.InvalidBool;
+            };
+            continue;
+        }
         const slot = if (eql(section, "migration") and eql(key, "path"))
             &path
         else if (eql(section, "database") and eql(key, "url"))
             &url
+        else if (eql(section, "database") and eql(key, "schema"))
+            &schema
+        else if (eql(section, "dump") and eql(key, "path"))
+            &dump.path
+        else if (eql(section, "dump") and eql(key, "pg_dump"))
+            &dump.pg_dump
         else
             continue;
 
@@ -105,10 +152,16 @@ pub fn parse(gpa: Allocator, source: []const u8, diag: *Diagnostics) ParseError!
         slot.* = value;
     }
 
+    if (schema) |x| if (x.len == 0) {
+        gpa.free(x);
+        schema = null;
+    };
     return .{
         .path = path orelse try gpa.dupe(u8, default_path),
         .url = url,
+        .schema = schema,
         .timeouts = timeouts,
+        .dump = dump,
     };
 }
 

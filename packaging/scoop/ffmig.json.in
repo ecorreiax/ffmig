@@ -1,0 +1,24 @@
+{
+    "version": "@VERSION@",
+    "description": "Database migrations in a small database-neutral language",
+    "homepage": "https://github.com/ecorreiax/ffmig",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/ecorreiax/ffmig/releases/download/v@VERSION@/ffmig-windows-amd64.zip",
+            "hash": "@SHA256_WINDOWS_AMD64@"
+        }
+    },
+    "bin": "ffmig.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/ecorreiax/ffmig/releases/download/v$version/ffmig-windows-amd64.zip"
+            }
+        },
+        "hash": {
+            "url": "$baseurl/SHA256SUMS"
+        }
+    }
+}

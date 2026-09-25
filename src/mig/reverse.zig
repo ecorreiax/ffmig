@@ -42,12 +42,21 @@ fn invert(op: ast.Operation, diag: *Diagnostic) Error!ast.Operation.Kind {
             .column = o.column orelse return irreversible(op, diag, "remove_column without a type"),
         } },
         .rename_column => |o| .{ .rename_column = .{ .table = o.table, .from = o.to, .to = o.from } },
-        .add_index => |o| .{ .remove_index = .{ .table = o.table, .column = o.column, .unique = o.unique, .name = o.name } },
-        .remove_index => |o| .{ .add_index = .{
+        .add_index => |o| .{ .remove_index = .{
             .table = o.table,
-            .column = o.column orelse return irreversible(op, diag, "remove_index without a column"),
+            .columns = o.columns,
             .unique = o.unique,
             .name = o.name,
+            .where = o.where,
+            .algorithm = o.algorithm,
+        } },
+        .remove_index => |o| .{ .add_index = .{
+            .table = o.table,
+            .columns = o.columns orelse return irreversible(op, diag, "remove_index without a column"),
+            .unique = o.unique,
+            .name = o.name,
+            .where = o.where,
+            .algorithm = o.algorithm,
         } },
         .rename_table => |o| .{ .rename_table = .{ .from = o.to, .to = o.from } },
         .change_column => |o| .{ .change_column = .{

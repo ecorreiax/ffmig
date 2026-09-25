@@ -16,6 +16,7 @@ const Env = @import("root.zig").Env;
 const migrations = @import("migrations.zig");
 const rollback = @import("rollback.zig");
 const flags = @import("flags.zig");
+const dump = @import("dump.zig");
 
 pub const usage =
     \\Usage:
@@ -50,7 +51,7 @@ pub fn run(env: Env, args: []const []const u8, out: *Writer, err: *Writer) Write
 
     var project = try migrations.Project.load(env, arena, err) orelse return 1;
     defer project.close(env.io);
-    const conn = try migrations.connect(env, arena, project.url, err) orelse return 1;
+    const conn = try project.connect(env, arena, err) orelse return 1;
     defer conn.db.close();
     return redo(env, arena, project, conn, options, out, err);
 }
@@ -110,5 +111,6 @@ pub fn redo(
         if (!try migrations.apply(arena, conn, p.path, p.up(), p.insert(), p.migration.transaction, err)) return 1;
         try out.print("Migrated {s}\n", .{p.path});
     }
+    if (!try dump.after(env, arena, project, conn, out, err)) return 1;
     return 0;
 }

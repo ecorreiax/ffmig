@@ -7,6 +7,8 @@ CREATE TABLE "t" (
   "b" bigint DEFAULT 9223372036854775807,
   "f" double precision DEFAULT 1,
   "d" numeric DEFAULT 0,
+  "d2" numeric DEFAULT -0.10,
+  "f2" double precision DEFAULT 0.5,
   "active" boolean DEFAULT false,
   "day" date DEFAULT '2026-01-01',
   "at" timestamp(6) DEFAULT '2026-01-01 12:00:00',

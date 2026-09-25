@@ -1,7 +1,7 @@
 //! PostgreSQL spellings for `root.zig`: type mapping, identifier quoting,
 //! primary keys, literals, named defaults, the renames that follow a
 //! renamed table, the tracking table's catalog lookup, the migration
-//! lock, timeouts and the database lookup.
+//! lock, timeouts, the schema and the database lookup.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -56,7 +56,7 @@ pub fn columnType(w: *Writer, c: ast.Column) Writer.Error!void {
         .float => try w.writeAll("double precision"),
         .boolean => try w.writeAll("boolean"),
         .date => try w.writeAll("date"),
-        .datetime => try w.writeAll("timestamp(6)"),
+        .datetime => try w.writeAll(if (c.time_zone) "timestamptz(6)" else "timestamp(6)"),
         .time => try w.writeAll("time"),
         .binary => try w.writeAll("bytea"),
         .uuid => try w.writeAll("uuid"),
@@ -70,6 +70,7 @@ pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
     switch (l) {
         .string => |s| try w.print("{f}", .{StringLiteral{ .parts = &.{s} }}),
         .integer => |i| try w.print("{d}", .{i}),
+        .decimal => |d| try w.writeAll(d),
         .boolean => |b| try w.writeAll(if (b) "true" else "false"),
         .nil => try w.writeAll("NULL"),
     }
@@ -77,11 +78,20 @@ pub fn literal(w: *Writer, l: ast.Literal) Writer.Error!void {
 
 /// `CURRENT_TIMESTAMP` fits `date` and `time` columns too, through
 /// PostgreSQL's assignment casts, so the column's type (null when the
-/// operation does not know it) does not matter.
+/// operation does not know it) does not matter. `gen_random_uuid()` is
+/// built in since PostgreSQL 13.
 pub fn namedDefault(w: *Writer, n: ast.NamedDefault, _: ?ast.ColumnType) Writer.Error!void {
     try w.writeAll(switch (n) {
         .now => "CURRENT_TIMESTAMP",
+        .uuid => "gen_random_uuid()",
     });
+}
+
+/// The keyword after `CREATE INDEX` and `DROP INDEX`.
+pub fn indexAlgorithm(a: ast.IndexAlgorithm) []const u8 {
+    return switch (a) {
+        .concurrently => "CONCURRENTLY",
+    };
 }
 
 /// Follows `ALTER TABLE <from> RENAME TO <to>` with a `DO` block that
@@ -192,11 +202,34 @@ pub fn trackingCurrent(w: *Writer, table: []const u8, columns: []const []const u
     try w.print(") HAVING count(*) = {d}", .{columns.len});
 }
 
+/// The schema of the table that an unqualified `table` names, which is
+/// where `select` and `insert` find it.
+pub fn trackingSchema(w: *Writer, table: []const u8) Writer.Error!void {
+    try w.writeAll("SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass(");
+    try literal(w, .{ .string = table });
+    try w.writeByte(')');
+}
+
 /// Whole seconds since 1970 of a `timestamptz` column, null staying null.
 pub fn epochSeconds(w: *Writer, column: []const u8) Writer.Error!void {
     try w.writeAll("floor(extract(epoch FROM ");
     try identifier(w, column);
     try w.writeAll("))::bigint");
+}
+
+/// `search_path` holds only the schema, so tables are neither found nor
+/// created anywhere else.
+pub fn schema(w: *Writer, s: root.Schema) Writer.Error!void {
+    switch (s) {
+        .exists => |name| {
+            try w.writeAll("SELECT 1 FROM pg_namespace WHERE nspname = ");
+            try literal(w, .{ .string = name });
+        },
+        .use => |name| {
+            try w.writeAll("SET search_path TO ");
+            try identifier(w, name);
+        },
+    }
 }
 
 pub fn databaseExists(w: *Writer, name: []const u8) Writer.Error!void {

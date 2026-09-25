@@ -1,12 +1,14 @@
-# Column defaults: literals that fit the column type, and `:now`, which the
-# database evaluates at insert time.
+# Column defaults: literals that fit the column type, and `:now` and
+# `:uuid`, which the database evaluates at insert time.
 migration CreateEvents {
   change {
     create_table :events {
       string :kind, null: false, default: "pageview"
       integer :attempts, null: false, default: 0
       boolean :processed, null: false, default: false
-      decimal :amount, precision: 10, scale: 2, default: 0
+      decimal :amount, precision: 10, scale: 2, default: 0.00
+      float :weight, null: false, default: 1.5
+      uuid :public_id, null: false, default: :uuid
       json :payload, default: "{}"
       datetime :occurred_at, null: false, default: :now
     }

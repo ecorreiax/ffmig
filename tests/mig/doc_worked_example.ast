@@ -5,9 +5,10 @@ migration CreateUsersProfile
       column email string not_null limit=255
       column role integer not_null default=0
       column active boolean null default=true
-      column balance decimal null precision=10 scale=2 default=0
+      column balance decimal null precision=10 scale=2 default=0.50
+      column api_key uuid not_null default=:uuid
       column settings json null default="{}"
-      column confirmed_at datetime null default=:now
-      column created_at datetime not_null
-      column updated_at datetime not_null
+      column confirmed_at datetime null time_zone default=:now
+      column created_at datetime not_null time_zone
+      column updated_at datetime not_null time_zone
     add_index users_profile email unique

@@ -42,12 +42,20 @@ pub const Lexer = struct {
             '-', '0'...'9' => {
                 if (c == '-' and !isDigit(self.peek(0))) return self.make(.invalid, start);
                 while (isDigit(self.peek(0))) self.index += 1;
+                var tag: Tag = .integer;
+                if (self.peek(0) == '.') {
+                    self.index += 1;
+                    // `1.` is one bad token.
+                    if (!isDigit(self.peek(0))) return self.make(.invalid, start);
+                    while (isDigit(self.peek(0))) self.index += 1;
+                    tag = .decimal;
+                }
                 // `0abc` is one bad token, not `0` followed by a new call `abc`.
-                if (isIdentStart(self.peek(0))) {
-                    self.skipIdent();
+                if (isIdentStart(self.peek(0)) or self.peek(0) == '.') {
+                    while (isIdentContinue(self.peek(0)) or self.peek(0) == '.') self.index += 1;
                     return self.make(.invalid, start);
                 }
-                return self.make(.integer, start);
+                return self.make(tag, start);
             },
             'A'...'Z', 'a'...'z', '_' => {
                 self.skipIdent();

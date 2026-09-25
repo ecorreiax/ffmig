@@ -83,7 +83,19 @@ pub const Tracking = union(enum) {
     select,
     insert: struct { version: []const u8, checksum: []const u8 },
     delete: []const u8,
+    /// Selects the name of the schema that holds the table, no row when
+    /// there is no table.
+    schema,
+    /// Selects one row if the table has any.
+    any,
+    /// Inserts `rows`, at least one, into the table in `schema`, for
+    /// `ffmig dump`, whose file does not depend on the search path. They
+    /// get the time of the insert as `applied_at`.
+    insert_all: struct { schema: []const u8, rows: []const TrackingRow },
 };
+
+/// A row that `Tracking.insert_all` writes.
+pub const TrackingRow = struct { version: []const u8, checksum: ?[]const u8 };
 
 /// The columns after `version`, which `upgrade` adds to an older table.
 const tracking_columns = [_][]const u8{ "checksum", "applied_at" };
@@ -160,6 +172,30 @@ fn tracking(comptime D: type, t: Tracking, w: *Writer) Writer.Error!void {
             try w.writeAll(" = ");
             try D.literal(w, .{ .string = v });
         },
+        .schema => try D.trackingSchema(w, tracking_table),
+        .any => {
+            try w.writeAll("SELECT 1 FROM ");
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" LIMIT 1");
+        },
+        .insert_all => |all| {
+            try w.writeAll("INSERT INTO ");
+            try D.identifier(w, all.schema);
+            try w.writeByte('.');
+            try D.identifier(w, tracking_table);
+            try w.writeAll(" (");
+            try D.identifier(w, "version");
+            try w.writeAll(", ");
+            try D.identifier(w, "checksum");
+            try w.writeAll(") VALUES");
+            for (all.rows, 0..) |row, i| {
+                try w.writeAll(if (i == 0) "\n(" else ",\n(");
+                try D.literal(w, .{ .string = row.version });
+                try w.writeAll(", ");
+                try D.literal(w, if (row.checksum) |c| .{ .string = c } else .nil);
+                try w.writeByte(')');
+            }
+        },
     }
 }
 
@@ -203,6 +239,23 @@ pub const Timeout = union(enum) {
 pub fn writeTimeout(dialect: Dialect, t: Timeout, w: *Writer) Writer.Error!void {
     switch (dialect) {
         .postgres => try postgres.timeout(w, t),
+    }
+}
+
+/// A statement about the schema that `[database] schema` in `ffmig.toml`
+/// names, which holds the project's tables.
+pub const Schema = union(enum) {
+    /// Selects one row if the schema exists, none otherwise.
+    exists: []const u8,
+    /// Makes unqualified names find tables in the schema, and create them
+    /// there, for the rest of the session.
+    use: []const u8,
+};
+
+/// Writes one schema statement, without a trailing `;`.
+pub fn writeSchema(dialect: Dialect, s: Schema, w: *Writer) Writer.Error!void {
+    switch (dialect) {
+        .postgres => try postgres.schema(w, s),
     }
 }
 
@@ -286,7 +339,7 @@ pub const Statements = struct {
                 if (r.index == .none) continue;
                 return .{ .span = op.span, .kind = .{ .add_index = .{
                     .table = table,
-                    .column = columns[i].name,
+                    .columns = (&columns[i].name)[0..1],
                     .unique = r.index == .unique,
                 } } };
             }
@@ -356,17 +409,26 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
         },
         .add_index => |o| {
             try w.writeAll(if (o.unique) "CREATE UNIQUE INDEX " else "CREATE INDEX ");
-            try indexName(D, o.table, o.column, o.name, w);
+            if (o.algorithm) |a| try w.print("{s} ", .{D.indexAlgorithm(a)});
+            try indexName(D, o.table, o.columns, o.name, w);
             try w.writeAll(" ON ");
             try D.identifier(w, o.table);
             try w.writeAll(" (");
-            try D.identifier(w, o.column);
+            for (o.columns, 0..) |c, i| {
+                if (i > 0) try w.writeAll(", ");
+                try D.identifier(w, c);
+            }
             try w.writeByte(')');
+            if (o.where) |condition| {
+                try w.writeAll(" WHERE ");
+                try w.writeAll(std.mem.trim(u8, condition, " \t\r\n"));
+            }
         },
         .remove_index => |o| {
             try w.writeAll("DROP INDEX ");
-            // Lowering guarantees a column or a name.
-            try indexName(D, o.table, o.column orelse "", o.name, w);
+            if (o.algorithm) |a| try w.print("{s} ", .{D.indexAlgorithm(a)});
+            // Lowering guarantees columns or a name.
+            try indexName(D, o.table, o.columns orelse &.{}, o.name, w);
         },
         .rename_table => |o| {
             try alterTable(D, o.from, w);
@@ -383,6 +445,7 @@ fn statement(comptime D: type, kind: ast.Operation.Kind, w: *Writer) Writer.Erro
                 .limit = o.to.limit,
                 .precision = o.to.precision,
                 .scale = o.to.scale,
+                .time_zone = o.to.time_zone,
                 .span = .{ .start = 0, .end = 0 },
             });
         },
@@ -488,10 +551,24 @@ fn defaultValue(comptime D: type, d: ast.Default, column_type: ?ast.ColumnType, 
     }
 }
 
-/// `name`, or the default `index_<table>_on_<column>`, quoted.
-fn indexName(comptime D: type, table: []const u8, col: []const u8, name: ?[]const u8, w: *Writer) Writer.Error!void {
+/// `name`, or the default `index_<table>_on_<c1>_and_<c2>`, quoted.
+fn indexName(comptime D: type, table: []const u8, cols: []const []const u8, name: ?[]const u8, w: *Writer) Writer.Error!void {
     if (name) |n| return D.identifier(w, n);
-    try D.identifierParts(w, &.{ "index_", table, "_on_", col });
+    // Lowering keeps a default name within `ast.max_name_length`, which
+    // leaves room for 9 columns at most.
+    var parts: [4 + 2 * 15][]const u8 = undefined;
+    std.debug.assert(cols.len <= 16);
+    parts[0..3].* = .{ "index_", table, "_on_" };
+    var n: usize = 3;
+    for (cols, 0..) |c, i| {
+        if (i > 0) {
+            parts[n] = "_and_";
+            n += 1;
+        }
+        parts[n] = c;
+        n += 1;
+    }
+    try D.identifierParts(w, parts[0..n]);
 }
 
 /// `"name" type [DEFAULT value] [NOT NULL] [foreign key]`, for a column of

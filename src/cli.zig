@@ -31,6 +31,8 @@ pub const usage =
     \\      rollback        Undo the last applied migration
     \\      redo            Undo the last applied migration and apply it again
     \\      status          List migrations as up or down, with when each ran
+    \\      dump            Write the database schema to schema.sql
+    \\      load            Create the schema from schema.sql in an empty database
     \\      help            Show this message, or a command's flags
     \\      version         Print the version
     \\

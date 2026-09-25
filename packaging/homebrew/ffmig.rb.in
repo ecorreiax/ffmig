@@ -1,0 +1,28 @@
+# Written by scripts/packaging.sh from packaging/homebrew/ffmig.rb.in in
+# github.com/ecorreiax/ffmig at each release; edit the template there.
+class Ffmig < Formula
+  desc "Database migrations in a small database-neutral language"
+  homepage "https://github.com/ecorreiax/ffmig"
+  version "@VERSION@"
+  license "MIT"
+
+  on_arm do
+    url "https://github.com/ecorreiax/ffmig/releases/download/v@VERSION@/ffmig-macos-arm64.tar.gz"
+    sha256 "@SHA256_MACOS_ARM64@"
+  end
+  on_intel do
+    url "https://github.com/ecorreiax/ffmig/releases/download/v@VERSION@/ffmig-macos-amd64.tar.gz"
+    sha256 "@SHA256_MACOS_AMD64@"
+  end
+
+  depends_on "libpq"
+  depends_on :macos
+
+  def install
+    bin.install "ffmig"
+  end
+
+  test do
+    assert_match "ffmig #{version}", shell_output("#{bin}/ffmig --version")
+  end
+end
