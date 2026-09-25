@@ -10,9 +10,27 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // The PostgreSQL driver (`src/db/postgres.zig`); found through
-    // pkg-config, which the nix dev shell sets up.
-    mod.linkSystemLibrary("pq", .{});
+    // The PostgreSQL driver (`src/db/postgres.zig`). Found through
+    // pkg-config, which the nix dev shell sets up, unless `-Dlibpq` names
+    // the library file, as release builds do: a nix path would not exist
+    // on the machines that run the binary.
+    if (b.option([]const u8, "libpq", "Link this libpq file (libpq.so.5, libpq.5.dylib, libpq.dll.a) instead of the one pkg-config finds")) |path| {
+        if (target.result.os.tag == .windows) {
+            // The driver's `extern "pq"` functions need `-lpq` to find
+            // the import library, which Zig looks for as `pq.lib`.
+            const lib = b.addWriteFiles();
+            _ = lib.addCopyFile(.{ .cwd_relative = path }, "pq.lib");
+            mod.addLibraryPath(lib.getDirectory());
+            mod.linkSystemLibrary("pq", .{ .use_pkg_config = .no, .preferred_link_mode = .dynamic });
+        } else {
+            mod.addObjectFile(.{ .cwd_relative = path });
+            // libpq calls into libc, which must then start up with the
+            // program; `linkSystemLibrary` implies this.
+            mod.link_libc = true;
+        }
+    } else {
+        mod.linkSystemLibrary("pq", .{});
+    }
     // `ffmig --version` prints the version from `build.zig.zon`.
     const options = b.addOptions();
     options.addOption([]const u8, "version", manifest.version);

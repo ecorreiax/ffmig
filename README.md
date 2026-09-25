@@ -13,12 +13,14 @@ Migrations are written in [.mig](MIG.md), a small database-neutral language with
 **macOS** (Homebrew):
 
 ```sh
+brew tap ecorreiax/tap
 brew install ffmig
 ```
 
-**Linux:**
+**Linux** (`ffmig-linux-amd64`, or `ffmig-linux-arm64` on ARM). FFMig uses libpq, PostgreSQL's client library, which the first line installs:
 
 ```sh
+sudo apt-get install -y libpq5    # Debian, Ubuntu; on Fedora and RHEL: sudo dnf install -y libpq
 sudo curl -fsSL -o /usr/local/bin/ffmig https://github.com/ecorreiax/ffmig/releases/latest/download/ffmig-linux-amd64
 sudo chmod +x /usr/local/bin/ffmig
 ```
@@ -26,6 +28,7 @@ sudo chmod +x /usr/local/bin/ffmig
 **Windows** (Scoop):
 
 ```sh
+scoop bucket add ecorreiax https://github.com/ecorreiax/scoop-bucket
 scoop install ffmig
 ```
 
@@ -35,12 +38,16 @@ scoop install ffmig
 docker run --rm -it --network=host ghcr.io/ecorreiax/ffmig --help
 ```
 
+To run it on a project, mount the project directory: `docker run --rm --network=host -v "$PWD:/app" -e DATABASE_URL ghcr.io/ecorreiax/ffmig migrate`.
+
 Check it runs:
 
 ```sh
 $ ffmig --version
 ffmig 0.1.0
 ```
+
+FFMig works with PostgreSQL 13 or later, and connects with TLS whenever the database URL asks for it (`?sslmode=require`), as managed databases do. If it fails to start with `libpq.so.5: cannot open shared object file` or `Library not loaded: libpq.5.dylib`, libpq is missing: install it as above, or with `brew install libpq` on macOS.
 
 ### Set up a project
 

@@ -31,8 +31,9 @@
         };
 
         devShells.default = pkgs.mkShell {
-          # libpq is linked by ffmig; postgresql runs the integration tests.
-          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq pkgs.postgresql ];
+          # libpq is linked by ffmig; postgresql runs the integration
+          # tests, and openssl makes the certificate for scripts/smoke.sh.
+          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq pkgs.postgresql pkgs.openssl ];
         };
       });
 }
