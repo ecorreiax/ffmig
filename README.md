@@ -13,9 +13,10 @@ Migrations are written in [.mig](MIG.md), a small database-neutral language with
 **macOS** (Homebrew):
 
 ```sh
-brew tap ecorreiax/tap
-brew install ffmig
+brew install ecorreiax/tap/ffmig
 ```
+
+The full name matters: Homebrew only loads formulae from a tap you trust, and naming it this way trusts `ffmig` (and only `ffmig`) from the tap. A plain `brew install ffmig` stops with `Refusing to load formula ecorreiax/tap/ffmig from untrusted tap`; run the command above, or `brew trust --formula ecorreiax/tap/ffmig`. `brew upgrade` then keeps it up to date.
 
 **Linux** (`ffmig-linux-amd64`, or `ffmig-linux-arm64` on ARM). FFMig uses libpq, PostgreSQL's client library, which the first line installs:
 
