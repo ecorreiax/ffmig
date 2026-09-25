@@ -15,13 +15,15 @@ const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 
 pub const usage =
-    \\Usage: ffmig sql [flags] <file>
+    \\Usage:
+    \\
+    \\      ffmig sql [flags] <file>
     \\
     \\Print the PostgreSQL for a migration's up plan. Nothing touches a
     \\database.
     \\
     \\Flags:
-    \\  --down           Print the down plan instead
+    \\      --down                Print the down plan instead
     \\
 ++ flags.help_option;
 

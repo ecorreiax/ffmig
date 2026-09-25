@@ -74,15 +74,14 @@ pub fn wantsHelp(args: []const []const u8) bool {
 /// Usage lines for the options that `cli.run` reads on the commands'
 /// behalf, aligned like each command's own.
 pub const config_option =
-    \\  --config <path>  Config file (default: ffmig.toml)
+    \\      --config <path>       Config file (default: ffmig.toml)
     \\
 ;
 pub const url_option =
-    \\  --url <url>      Database URL, instead of FFMIG_DATABASE_URL or
-    \\                   the config's
+    \\      --url <url>           Database connection string
     \\
 ;
 pub const help_option =
-    \\  -h, --help       Show this message
+    \\      -h, --help            Show this message
     \\
 ;

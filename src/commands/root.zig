@@ -78,7 +78,9 @@ pub const Globals = struct {
 };
 
 pub const help_usage =
-    \\Usage: ffmig help [command]
+    \\Usage:
+    \\
+    \\      ffmig help [command]
     \\
     \\Show the commands, or one command's usage and flags. So does
     \\'ffmig <command> --help'.
@@ -86,7 +88,9 @@ pub const help_usage =
 ;
 
 pub const version_usage =
-    \\Usage: ffmig version
+    \\Usage:
+    \\
+    \\      ffmig version
     \\
     \\Print the version of ffmig. So does 'ffmig --version'.
     \\

@@ -15,7 +15,9 @@ const migrations = @import("migrations.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig status [flags]
+    \\Usage:
+    \\
+    \\      ffmig status [flags]
     \\
     \\List migrations as up or down, with when each ran and whether its
     \\file has changed since.

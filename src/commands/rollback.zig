@@ -20,17 +20,19 @@ const mig = @import("../mig/root.zig");
 const sql = @import("../sql/root.zig");
 
 pub const usage =
-    \\Usage: ffmig rollback [flags]
+    \\Usage:
+    \\
+    \\      ffmig rollback [flags]
     \\
     \\Undo the last applied migration.
     \\
     \\Flags:
-    \\  --step <n>       Undo the last n instead
-    \\  --to <version>   Undo every migration newer than this one, which
-    \\                   stays applied
-    \\  --dry-run        Print the SQL that would run, and run nothing
-    \\  --lock-wait <s>  Wait up to s seconds for another migrate or
-    \\                   rollback to finish (default: 60; 0: do not wait)
+    \\      --step <n>            Undo the last n instead
+    \\      --to <version>        Undo every migration newer than this one, which
+    \\                            stays applied
+    \\      --dry-run             Print the SQL that would run, and run nothing
+    \\      --lock-wait <s>       Wait up to s seconds for another migrate or
+    \\                            rollback to finish (default: 60; 0: do not wait)
     \\
 ++ flags.config_option ++ flags.url_option ++ flags.help_option;
 

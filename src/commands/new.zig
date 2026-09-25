@@ -12,7 +12,9 @@ const migrations = @import("migrations.zig");
 const fs = @import("../utils/fs.zig");
 
 pub const usage =
-    \\Usage: ffmig new [flags] <name>
+    \\Usage:
+    \\
+    \\      ffmig new [flags] <name>
     \\
     \\Create <timestamp>_<name>.mig in the migrations directory, e.g.
     \\'ffmig new create_users'.

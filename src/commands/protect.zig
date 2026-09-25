@@ -16,7 +16,9 @@ const sql = @import("../sql/root.zig");
 const unprotect = @import("unprotect.zig");
 
 pub const usage =
-    \\Usage: ffmig protect [flags]
+    \\Usage:
+    \\
+    \\      ffmig protect [flags]
     \\
     \\Mark the database that the database url names so that drop refuses
     \\it, even with --force, until 'ffmig unprotect'.

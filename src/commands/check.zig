@@ -18,14 +18,16 @@ const fs = @import("../utils/fs.zig");
 const mig = @import("../mig/root.zig");
 
 pub const usage =
-    \\Usage: ffmig check [flags] [file...]
+    \\Usage:
+    \\
+    \\      ffmig check [flags] [file...]
     \\
     \\Check .mig files, by default every one in the migrations directory,
     \\and report the first error in each.
     \\
     \\Flags:
-    \\  --ast            Print each parsed migration
-    \\  --down           Print it as up / down, deriving down for change
+    \\      --ast                 Print each parsed migration
+    \\      --down                Print it as up / down, deriving down for change
     \\
 ++ flags.config_option ++ flags.help_option;
 

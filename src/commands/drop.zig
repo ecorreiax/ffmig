@@ -21,14 +21,16 @@ const migrations = @import("migrations.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig drop [flags]
+    \\Usage:
+    \\
+    \\      ffmig drop [flags]
     \\
     \\Drop the database that the database url names, schema_migrations
     \\included, after asking for its name. A protected database is
     \\refused.
     \\
     \\Flags:
-    \\  --force          Do not ask; needed where nobody can answer
+    \\      --force               Do not ask; needed where nobody can answer
     \\
 ++ flags.config_option ++ flags.url_option ++ flags.help_option;
 

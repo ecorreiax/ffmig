@@ -18,14 +18,16 @@ const rollback = @import("rollback.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig redo [flags]
+    \\Usage:
+    \\
+    \\      ffmig redo [flags]
     \\
     \\Undo the last applied migration and apply it again.
     \\
     \\Flags:
-    \\  --step <n>       Redo the last n instead
-    \\  --lock-wait <s>  Wait up to s seconds for another migrate or
-    \\                   rollback to finish (default: 60; 0: do not wait)
+    \\      --step <n>            Redo the last n instead
+    \\      --lock-wait <s>       Wait up to s seconds for another migrate or
+    \\                            rollback to finish (default: 60; 0: do not wait)
     \\
 ++ flags.config_option ++ flags.url_option ++ flags.help_option;
 

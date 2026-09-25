@@ -30,19 +30,21 @@ const flags = @import("flags.zig");
 const mig = @import("../mig/root.zig");
 
 pub const usage =
-    \\Usage: ffmig migrate [flags]
+    \\Usage:
+    \\
+    \\      ffmig migrate [flags]
     \\
     \\Apply every pending migration, oldest first.
     \\
     \\Flags:
-    \\  --to <version>   Stop after the migration with this version
-    \\  --dry-run        Print the SQL that would run, and run nothing
-    \\  --fake           Record the migrations as applied without running
-    \\                   them, to adopt a database that already has them
-    \\  --lock-wait <s>  Wait up to s seconds for another migrate or
-    \\                   rollback to finish (default: 60; 0: do not wait)
-    \\  --strict         Refuse to run if an applied file has changed
-    \\                   since it ran
+    \\      --to <version>        Stop after the migration with this version
+    \\      --dry-run             Print the SQL that would run, and run nothing
+    \\      --fake                Record the migrations as applied without running
+    \\                            them, to adopt a database that already has them
+    \\      --lock-wait <s>       Wait up to s seconds for another migrate or
+    \\                            rollback to finish (default: 60; 0: do not wait)
+    \\      --strict              Refuse to run if an applied file has changed
+    \\                            since it ran
     \\
 ++ flags.config_option ++ flags.url_option ++ flags.help_option;
 

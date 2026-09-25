@@ -8,7 +8,9 @@ const protect = @import("protect.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig unprotect [flags]
+    \\Usage:
+    \\
+    \\      ffmig unprotect [flags]
     \\
     \\Remove the mark that 'ffmig protect' sets, so drop works again.
     \\

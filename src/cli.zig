@@ -12,30 +12,29 @@ const flags = commands.flags;
 const version = @import("build_options").version;
 
 pub const usage =
-    \\Usage: ffmig <command> [flags]
+    \\FFMig is a tool for managing Database migrations.
+    \\
+    \\Usage:
+    \\
+    \\      ffmig <command> [flags]
     \\
     \\Commands:
-    \\  init            Create ffmig.toml and the migrations directory
-    \\  create          Create the database named by the database url
-    \\  drop            Drop that database, schema_migrations included,
-    \\                  after asking for its name
-    \\  protect         Mark the database so that drop refuses it
-    \\  unprotect       Remove that mark
-    \\  new <name>      Create a timestamped migration file
-    \\  check [files]   Check .mig files (default: all of them)
-    \\  sql <file>      Print the PostgreSQL for a migration
-    \\  migrate         Apply every pending migration
-    \\  rollback        Undo the last applied migration
-    \\  redo            Undo the last applied migration and apply it again
-    \\  status          List migrations as up or down, with when each ran
-    \\  help [command]  Show this message, or a command's flags
-    \\  version         Print the version
+    \\      init            Create ffmig.toml and the empty migrations directory
+    \\      create          Create the database named by the database url
+    \\      drop            Drop that database and schema_migrations
+    \\      protect         Prevents the database from being dropped
+    \\      unprotect       Remove the drop protection
+    \\      new             Create a migration file
+    \\      check           Check the migrations files
+    \\      sql             Print the SQL translantion for a migration
+    \\      migrate         Apply every pending migration
+    \\      rollback        Undo the last applied migration
+    \\      redo            Undo the last applied migration and apply it again
+    \\      status          List migrations as up or down, with when each ran
+    \\      help            Show this message, or a command's flags
+    \\      version         Print the version
     \\
-    \\Commands that read the config also take:
-    \\
-++ flags.config_option ++ flags.url_option ++
-    \\
-    \\Run 'ffmig help <command>' or 'ffmig <command> --help' for its flags.
+    \\Use "ffmig help <command>" for more information about a command.
     \\
 ;
 

@@ -101,8 +101,9 @@ test "every usage lists its flags" {
     for (std.enums.values(commands.Command)) |command| {
         const text = commands.usage(command);
         const globals: commands.Globals = .of(command);
-        try testing.expect(std.mem.startsWith(u8, text, "Usage: ffmig "));
-        try testing.expect(std.mem.startsWith(u8, text["Usage: ffmig ".len..], @tagName(command)));
+        const prefix = "Usage:\n\n      ffmig ";
+        try testing.expect(std.mem.startsWith(u8, text, prefix));
+        try testing.expect(std.mem.startsWith(u8, text[prefix.len..], @tagName(command)));
         try testing.expectEqual(command != .help and command != .version, std.mem.indexOf(u8, text, "-h, --help") != null);
         try testing.expectEqual(globals.config, std.mem.indexOf(u8, text, "--config <path>") != null);
         try testing.expectEqual(globals.url, std.mem.indexOf(u8, text, "--url <url>") != null);

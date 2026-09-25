@@ -14,15 +14,17 @@ const config = @import("../utils/config.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig init [flags]
+    \\Usage:
+    \\
+    \\      ffmig init [flags]
     \\
     \\Create ffmig.toml and the migrations directory.
     \\
     \\Flags:
-    \\  --path <dir>     Migrations directory, relative to the config
-    \\                   (default: migrations)
-    \\  --url <url>      Database URL to write (default: ${DATABASE_URL})
-    \\  --config <path>  Config file to create (default: ffmig.toml)
+    \\      --path <dir>          Migrations directory, relative to the config
+    \\                            (default: migrations)
+    \\      --url <url>           Database URL to write (default: ${DATABASE_URL})
+    \\      --config <path>       Config file to create (default: ffmig.toml)
     \\
 ++ flags.help_option;
 

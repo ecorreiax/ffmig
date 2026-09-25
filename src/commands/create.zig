@@ -13,7 +13,9 @@ const migrations = @import("migrations.zig");
 const flags = @import("flags.zig");
 
 pub const usage =
-    \\Usage: ffmig create [flags]
+    \\Usage:
+    \\
+    \\      ffmig create [flags]
     \\
     \\Create the database that the database url names, unless it exists.
     \\
