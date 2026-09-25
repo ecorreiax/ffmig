@@ -42,9 +42,6 @@ Created migrations/
 ```toml
 [migration]
 path = "migrations"
-# Fail a migration that waits longer than this for a lock, instead of
-# blocking every query queued behind it:
-# lock_timeout = "5s"
 
 [database]
 url = "${DATABASE_URL}"

@@ -31,15 +31,6 @@ pub const usage =
 const default_path = config.default_path;
 pub const default_url = "${DATABASE_URL}";
 
-/// Off by default so the server's settings apply, but shown so new
-/// projects see the recommendation.
-const lock_timeout_hint =
-    \\# Fail a migration that waits longer than this for a lock, instead of
-    \\# blocking every query queued behind it:
-    \\# lock_timeout = "5s"
-    \\
-;
-
 const Options = struct {
     path: []const u8 = default_path,
     url: []const u8 = default_url,
@@ -111,7 +102,7 @@ fn parseArgs(args: []const []const u8) ?Options {
 fn renderConfig(w: *Writer, opts: Options) Writer.Error!void {
     try w.writeAll("[migration]\npath = ");
     try writeTomlString(w, opts.path);
-    try w.writeAll("\n" ++ lock_timeout_hint ++ "\n[database]\nurl = ");
+    try w.writeAll("\n\n[database]\nurl = ");
     try writeTomlString(w, opts.url);
     try w.writeAll("\n");
 }

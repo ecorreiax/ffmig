@@ -18,9 +18,6 @@ test "parses the init template" {
     try expectParse(
         \\[migration]
         \\path = "db/migrations"
-        \\# Fail a migration that waits longer than this for a lock, instead of
-        \\# blocking every query queued behind it:
-        \\# lock_timeout = "5s"
         \\
         \\[database]
         \\url = "${DATABASE_URL}"

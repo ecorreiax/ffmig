@@ -53,9 +53,6 @@ test "init with defaults" {
     try expectConfig(tmp.dir,
         \\[migration]
         \\path = "migrations"
-        \\# Fail a migration that waits longer than this for a lock, instead of
-        \\# blocking every query queued behind it:
-        \\# lock_timeout = "5s"
         \\
         \\[database]
         \\url = "${DATABASE_URL}"
@@ -79,9 +76,6 @@ test "init with --path and --url" {
     try expectConfig(tmp.dir,
         \\[migration]
         \\path = "db/migrations"
-        \\# Fail a migration that waits longer than this for a lock, instead of
-        \\# blocking every query queued behind it:
-        \\# lock_timeout = "5s"
         \\
         \\[database]
         \\url = "postgres://user:password@localhost:5432/mydatabase"
@@ -112,9 +106,6 @@ test "init escapes toml strings" {
     try expectConfig(tmp.dir,
         \\[migration]
         \\path = "migrations"
-        \\# Fail a migration that waits longer than this for a lock, instead of
-        \\# blocking every query queued behind it:
-        \\# lock_timeout = "5s"
         \\
         \\[database]
         \\url = "a\"b\\c"
