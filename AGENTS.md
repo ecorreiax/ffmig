@@ -62,6 +62,8 @@ make clean          # also deletes ./migrations and ./ffmig.toml made by trying 
 
 `build.zig` has no test-filter option, so `make test` always runs the whole suite. `zig build integration` alone fails with `NoTestServer`: it needs `FFMIG_TEST_PGHOST`, which `scripts/integration.sh` sets.
 
+Release builds link a given libpq file with `-Dlibpq=<file>` instead of the `/nix/store` one pkg-config finds (`build.zig`). `scripts/smoke.sh <ffmig>` runs a built binary through the command lifecycle against a throwaway TLS-only PostgreSQL. CI (`.github/workflows/ci.yml`) runs `make fmt`, `make test` and `make integration` in the nix shell on Linux and macOS, then `build.yml` builds and smoke-tests every release binary; `release.yml` publishes on a `v*` tag. `RELEASING.md` has the procedure.
+
 ## Architecture
 
 `src/root.zig` is the library module (`ffmig`), and `src/main.zig` is a thin wrapper around it. Tests import the same module, so anything tested must be reachable from `src/root.zig`.

@@ -53,6 +53,8 @@ make integration   # integration tests against a real PostgreSQL
 
 `make integration` starts a throwaway PostgreSQL server on a Unix socket in a temporary directory (`scripts/integration.sh`), runs `tests/integration`, and stops the server afterwards. Nothing needs to be running beforehand, and it never touches another server.
 
+CI runs the same three on Linux and macOS for every pull request. It then builds the release binaries for Linux, macOS and Windows and runs each one through `scripts/smoke.sh`, which you can also run on a build of your own: `scripts/smoke.sh ./ffmig` (it needs `initdb`, `pg_ctl` and `openssl`, which the dev shell has).
+
 The tests live in `tests/`:
 
 - `tests/mig/` holds golden tests for the `.mig` front end: each `<case>.mig` pairs with `<case>.ast` (the expected parse) or `<case>.err` (the expected error).

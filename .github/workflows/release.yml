@@ -1,0 +1,136 @@
+# Publishes a release when a version tag (v0.1.0) is pushed: builds and
+# smoke-tests every binary (build.yml), creates the GitHub release with
+# them and SHA256SUMS, notes from CHANGELOG.md, pushes the image to
+# ghcr.io, and updates the Homebrew tap and the Scoop bucket. RELEASING.md
+# has the procedure and the one-time setup.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: The tag must match build.zig.zon, and CHANGELOG.md must have its notes
+        run: |
+          version=$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' build.zig.zon)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in build.zig.zon"
+            exit 1
+          fi
+          scripts/changelog.sh "$version" >/dev/null
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+
+  github:
+    name: GitHub release
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmig-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum -- * >SHA256SUMS && cat SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          scripts/changelog.sh "$VERSION" >notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "FFMig $VERSION" --notes-file notes.md
+
+  docker:
+    name: ghcr.io image
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmig-linux-*
+          merge-multiple: true
+          path: packaging/docker
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: packaging/docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.check.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Database migrations in a small database-neutral language
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+
+  packages:
+    name: Homebrew tap and Scoop bucket
+    needs: [check, github]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmig-*
+          merge-multiple: true
+          path: dist
+      - name: Write the formula and the manifest
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          (cd dist && sha256sum -- * >SHA256SUMS)
+          scripts/packaging.sh "$VERSION" dist/SHA256SUMS packages
+      - name: Push them
+        env:
+          # A token that may push to both repositories; see RELEASING.md.
+          TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::PACKAGES_TOKEN is not set, so the Homebrew tap and the Scoop bucket were not updated"
+            exit 0
+          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          push() {
+            repo=$1 dir=$2
+            git clone --depth 1 "https://x-access-token:$TOKEN@github.com/ecorreiax/$repo.git" "repo-$repo"
+            mkdir -p "repo-$repo/$dir"
+            cp packages/"$dir"/* "repo-$repo/$dir/"
+            git -C "repo-$repo" add "$dir"
+            git -C "repo-$repo" commit -m "ffmig $VERSION"
+            # HEAD:main, since the first push goes to an empty repository.
+            git -C "repo-$repo" push origin HEAD:main
+          }
+          push homebrew-tap Formula
+          push scoop-bucket bucket
