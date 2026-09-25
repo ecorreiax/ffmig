@@ -31,9 +31,8 @@
         };
 
         devShells.default = pkgs.mkShell {
-          # libpq is linked by ffmig; postgresql runs the integration tests;
-          # nodejs builds the docs site.
-          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq pkgs.postgresql pkgs.nodejs ];
+          # libpq is linked by ffmig; postgresql runs the integration tests.
+          packages = [ zig pkgs.zls pkgs.pkg-config pkgs.libpq pkgs.postgresql ];
         };
       });
 }

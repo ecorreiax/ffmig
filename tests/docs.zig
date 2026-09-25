@@ -1,6 +1,5 @@
-//! Keeps the docs in step with the code: every ` ```mig ` block in
-//! `docs/` and `MIG.md` that holds a whole migration is valid, and
-//! `docs/commands.md` has a section for every command.
+//! Keeps the spec in step with the code: every ` ```mig ` block in
+//! `MIG.md` that holds a whole migration is valid.
 
 const std = @import("std");
 const ffmig = @import("ffmig");
@@ -10,47 +9,20 @@ const Diagnostic = mig.Diagnostic;
 
 const testing = std.testing;
 
-/// Read at test time; `build.zig` runs the tests from the project root.
-const docs_dir = "docs";
-
-test "every whole migration in the docs is valid" {
-    const io = testing.io;
+test "every whole migration in MIG.md is valid" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
-    const arena = arena_state.allocator();
 
-    var migrations: usize = 0;
-    migrations += try checkFile(arena, std.Io.Dir.cwd(), "MIG.md");
-
-    var dir = try std.Io.Dir.cwd().openDir(io, docs_dir, .{ .iterate = true });
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".md")) continue;
-        migrations += try checkFile(arena, dir, entry.name);
-    }
+    // Read at test time; `build.zig` runs the tests from the project root.
+    const migrations = try checkFile(arena_state.allocator(), "MIG.md");
     try testing.expect(migrations > 0);
-}
-
-test "docs/commands.md has a section for every command" {
-    const io = testing.io;
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, docs_dir ++ "/commands.md", testing.allocator, .unlimited);
-    defer testing.allocator.free(source);
-
-    inline for (comptime std.enums.values(ffmig.commands.Command)) |command| {
-        const heading = "\n### " ++ @tagName(command) ++ "\n";
-        if (std.mem.indexOf(u8, source, heading) == null) {
-            std.debug.print("docs/commands.md has no '### {s}' section\n", .{@tagName(command)});
-            return error.TestExpectedEqual;
-        }
-    }
 }
 
 /// Parses each ` ```mig ` block in `name` that starts with `migration`,
 /// after any comments, and returns how many there were. Other blocks are
 /// snippets of a migration and are left alone.
-fn checkFile(arena: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !usize {
-    const source = try dir.readFileAlloc(testing.io, name, arena, .unlimited);
+fn checkFile(arena: std.mem.Allocator, name: []const u8) !usize {
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, name, arena, .unlimited);
 
     var migrations: usize = 0;
     var lines = std.mem.splitScalar(u8, source, '\n');
